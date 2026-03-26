@@ -1,0 +1,1 @@
+# This is the graph building logic. Nodes = atoms and possible directionally to query points. Edges = bonds, NN, and connection type

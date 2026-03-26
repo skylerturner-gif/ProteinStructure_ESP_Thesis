@@ -1,0 +1,1 @@
+# This is the code for the egnn architecture. I may expand this to test out several models. I want to define message passing, equivariant updates, and forward passes here

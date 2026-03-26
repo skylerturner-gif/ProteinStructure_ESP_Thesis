@@ -1,0 +1,6 @@
+This will be where config files go for reproducibility .yaml
+
+I will most likely need configs for:
+apbs (density, calculation type, pka)
+surface (number of vertices, resolution, probe radius, vertex selection method)
+model (node definitions, number of layers, lr, epochs)

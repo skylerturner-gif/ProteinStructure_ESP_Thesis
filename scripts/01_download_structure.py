@@ -1,0 +1,1 @@
+# this is the script that downloads the proteins from either a .txt list or typed examples, downloads the .pdb file, and updates catalog

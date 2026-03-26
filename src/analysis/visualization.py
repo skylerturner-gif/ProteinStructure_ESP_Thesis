@@ -1,0 +1,1 @@
+# This is for visualization. I'll build scatter plots, bar charts, histograms here. This is potentially where I will have my pyvista application code

@@ -1,0 +1,1 @@
+# This is the script to call the API from AF to download the .pdb or .cif files

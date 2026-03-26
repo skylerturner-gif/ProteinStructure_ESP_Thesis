@@ -1,0 +1,1 @@
+This is where the logs will go for training. Not sure if I'll also keep the data processing logs here, perhaps some subfolders

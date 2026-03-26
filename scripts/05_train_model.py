@@ -1,0 +1,1 @@
+# This script trains the model. Takes dataset indices and graphs, trains the egnn model

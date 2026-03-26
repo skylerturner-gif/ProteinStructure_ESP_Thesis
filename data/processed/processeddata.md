@@ -1,0 +1,1 @@
+This is where the processed data will go. Each protein will have its own folder containing the structure .pdb file, the surface vertices.npy, surface_faces.npy, esp_values.npy, and metadata.json. Hopefully there will be a way to parse through the metadata to group proteins by shape, size, and function
