@@ -1,1 +1,0 @@
-# This is the file to generate logging. Unsure if this should just be incorporated with each funciton

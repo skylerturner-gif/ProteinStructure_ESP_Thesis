@@ -1,1 +1,0 @@
-# This script builds the datasets. Scans processed folders, builds indices, generates splits, builds graphs

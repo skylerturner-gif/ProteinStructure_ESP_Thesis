@@ -1,0 +1,1 @@
+# src/structure/__init__.py

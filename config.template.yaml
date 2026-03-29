@@ -1,0 +1,40 @@
+# config.template.yaml
+#
+# Copy this file to config.yaml and fill in the paths for your machine.
+# config.yaml is gitignored and should never be committed.
+#
+# Usage:
+#   cp config.template.yaml config.yaml
+#   # then edit config.yaml with your local paths
+
+paths:
+  # Root directory for all generated protein data (external to the repo)
+  # This is where all per-protein subdirectories will be created
+  data_root: /path/to/external/data
+
+  # Log file path (can be inside or outside the repo)
+  log_file: /path/to/project/logs/pipeline.log
+
+executables:
+  # If your conda env is active, the command name alone is sufficient.
+  # If not, provide the full path e.g. /home/user/miniconda3/envs/myenv/bin/pdb2pqr
+  pdb2pqr: pdb2pqr
+  apbs: apbs
+  msms: msms
+
+electrostatics:
+  forcefield: PARSE        # PARSE, AMBER, CHARMM, etc.
+  ph_method: propka        # propka or pdb2pka
+  ph_value: 7.0            # physiological pH
+
+surface:
+  msms_density: 3.0        # vertices per Å²
+  probe_radius: 1.4        # Å — water molecule probe radius
+
+esp_mapping:
+  normal_offset: 0.5       # Å — outward normal offset before ESP lookup
+  subsample_n: 3           # Laplacian: keep every Nth vertex as known points
+                           # e.g. N=3 → ~1/3 of vertices are constrained
+
+logging:
+  level: INFO              # DEBUG, INFO, WARNING, ERROR

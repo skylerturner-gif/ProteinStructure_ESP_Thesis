@@ -1,3 +1,229 @@
-# This is the full pipeline for data generation
+"""
+pipeline/full_pipeline.py
 
-# I'm not sure if I'll integrate snakemake yet, but this is where the entire process can be viewed
+Full end-to-end pipeline for the ProteinStructure ESP project.
+
+Runs all pipeline steps sequentially for each selected protein:
+    1. Download AlphaFold structure (mmCIF → PDB, PAE, metadata)
+    2. Run PDB2PQR (charge/radius assignment)
+    3. Run APBS (electrostatic potential calculation)
+    4. Generate surface meshes (PDB and PQR variants via MSMS)
+    5. Sample ESP onto surface meshes (interpolated + Laplacian)
+    6. Evaluate predictions (Pearson r, RMSE → metadata)
+
+Each step is skipped if its output files already exist.
+Failed steps are logged to the per-protein log file.
+A single terminal line is printed when each protein completes or fails.
+
+Usage:
+    python pipeline/full_pipeline.py --id-file data/protein_ids.txt
+    python pipeline/full_pipeline.py --id-file data/protein_ids.txt --data-root /path/to/data
+"""
+
+import argparse
+from pathlib import Path
+
+from src.analysis.metrics import evaluate_protein
+from src.electrostatics.run_apbs import process_apbs
+from src.electrostatics.run_pdb2pqr import process_pdb2pqr
+from src.structure.af_api import download_protein, read_uniprot_ids
+from src.surface.esp_mapping import sample_esp
+from src.surface.mesh import build_mesh
+from src.utils.config import get_config, get_data_root
+from src.utils.helpers import get_pipeline_logger, notify, timer
+from src.utils.io import load_metadata, update_metadata
+from src.utils.paths import ProteinPaths
+
+
+# ── Skip checks ───────────────────────────────────────────────────────────────
+
+def _already_downloaded(uniprot_id: str, data_root: Path) -> str | None:
+    """
+    Check if a UniProt ID has already been downloaded.
+    Returns the protein_id (directory name) if found, otherwise None.
+    """
+    for protein_dir in data_root.iterdir():
+        if protein_dir.is_dir() and uniprot_id in protein_dir.name:
+            if (protein_dir / "structure" / f"{protein_dir.name}.pdb").exists():
+                return protein_dir.name
+    return None
+
+
+def _already_evaluated(protein_id: str, data_root: Path) -> bool:
+    try:
+        meta = load_metadata(protein_id, data_root)
+        return "pearson_r_pdb" in meta and "pearson_r_pqr" in meta
+    except FileNotFoundError:
+        return False
+
+
+# ── Per-protein pipeline ──────────────────────────────────────────────────────
+
+def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
+    """
+    Run all pipeline steps for a single protein.
+    All detailed logging goes to the per-protein log file.
+    Returns a dict mapping step name to 'success', 'skipped', or 'failed'.
+    """
+    p    = ProteinPaths(protein_id, data_root)
+    plog = pipeline_log  # steps use pipeline log for high-level; modules use per-protein log
+
+    step_results = {}
+
+    with timer() as t_total:
+
+        # ── Step 2: PDB2PQR ───────────────────────────────────────────────────
+        if p.pqr_path.exists():
+            step_results["pdb2pqr"] = "skipped"
+        elif not p.pdb_path.exists():
+            plog.error("[%s] Step 2: PDB missing", protein_id)
+            step_results["pdb2pqr"] = "failed"
+        else:
+            ok = process_pdb2pqr(protein_id, data_root)
+            step_results["pdb2pqr"] = "success" if ok else "failed"
+
+        # ── Step 3: APBS ─────────────────────────────────────────────────────
+        if p.dx_path.exists():
+            step_results["apbs"] = "skipped"
+        elif not p.pqr_path.exists():
+            plog.error("[%s] Step 3: PQR missing", protein_id)
+            step_results["apbs"] = "failed"
+        else:
+            ok = process_apbs(protein_id, data_root)
+            step_results["apbs"] = "success" if ok else "failed"
+
+        # ── Step 4: Mesh generation ───────────────────────────────────────────
+        for struct_path, mesh_out, label in [
+            (p.pdb_path, p.pdb_mesh_path, "pdb"),
+            (p.pqr_path, p.pqr_mesh_path, "pqr"),
+        ]:
+            step_key = f"mesh_{label}"
+            if mesh_out.exists():
+                step_results[step_key] = "skipped"
+            elif not struct_path.exists():
+                plog.error("[%s] Step 4: %s missing", protein_id, label.upper())
+                step_results[step_key] = "failed"
+            else:
+                try:
+                    build_mesh(struct_path, protein_id, data_root)
+                    step_results[step_key] = "success"
+                except Exception as e:
+                    plog.error("[%s] Step 4 %s mesh failed: %s", protein_id, label, e)
+                    step_results[step_key] = "failed"
+
+        # ── Step 5: ESP sampling ──────────────────────────────────────────────
+        if p.all_sampled_exist():
+            step_results["esp_sampling"] = "skipped"
+        elif not p.pdb_mesh_path.exists() or not p.pqr_mesh_path.exists() or not p.dx_path.exists():
+            plog.error("[%s] Step 5: missing mesh or DX", protein_id)
+            step_results["esp_sampling"] = "failed"
+        else:
+            ok = sample_esp(protein_id, data_root)
+            step_results["esp_sampling"] = "success" if ok else "failed"
+
+        # ── Step 6: Evaluate ──────────────────────────────────────────────────
+        if _already_evaluated(protein_id, data_root):
+            step_results["evaluate"] = "skipped"
+        elif not p.all_sampled_exist():
+            plog.error("[%s] Step 6: sampled files missing", protein_id)
+            step_results["evaluate"] = "failed"
+        else:
+            try:
+                evaluate_protein(protein_id, data_root, write_metadata=True)
+                step_results["evaluate"] = "success"
+            except Exception as e:
+                plog.error("[%s] Step 6 failed: %s", protein_id, e)
+                step_results["evaluate"] = "failed"
+
+    # Write total time to metadata
+    try:
+        update_metadata(protein_id, data_root=data_root, data={
+            "time_total_sec": t_total.rounded,
+        })
+    except Exception:
+        pass  # don't let a metadata write failure mask pipeline results
+    any_failed   = any(v == "failed" for v in step_results.values())
+    status       = "failed" if any_failed else "complete"
+    failed_steps = [k for k, v in step_results.items() if v == "failed"]
+    detail       = f"{t_total.rounded}s" + (f"  failed: {', '.join(failed_steps)}" if failed_steps else "")
+
+    notify(protein_id, status, detail)
+    plog.info("[%s] Done in %.1f s  steps: %s", protein_id, t_total.seconds, step_results)
+
+    return step_results
+
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
+def _log_summary(all_results: dict, log) -> None:
+    steps = ["pdb2pqr", "apbs", "mesh_pdb", "mesh_pqr", "esp_sampling", "evaluate"]
+    log.info("═" * 70)
+    log.info("PIPELINE SUMMARY")
+    log.info("═" * 70)
+    for step in steps:
+        counts = {"success": 0, "skipped": 0, "failed": 0}
+        for step_results in all_results.values():
+            outcome = step_results.get(step, "n/a")
+            if outcome in counts:
+                counts[outcome] += 1
+        log.info("  %-20s  success=%d  skipped=%d  failed=%d",
+                 step, counts["success"], counts["skipped"], counts["failed"])
+    log.info("═" * 70)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Full end-to-end ESP pipeline."
+    )
+    parser.add_argument("--id-file", type=Path, required=True)
+    parser.add_argument("--data-root", type=Path, default=None)
+    args = parser.parse_args()
+
+    data_root = args.data_root or get_data_root()
+    log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
+
+    if not args.id_file.exists():
+        log.error("ID file not found: %s", args.id_file)
+        return
+
+    uniprot_ids = read_uniprot_ids(args.id_file)
+    if not uniprot_ids:
+        log.warning("No UniProt IDs found in %s", args.id_file)
+        return
+
+    log.info("Starting pipeline for %d proteins", len(uniprot_ids))
+    all_results = {}
+
+    with timer() as t_run:
+        for uniprot_id in uniprot_ids:
+
+            # ── Step 1: Download ──────────────────────────────────────────────
+            protein_id = _already_downloaded(uniprot_id, data_root)
+            if protein_id:
+                log.info("[%s] Already downloaded as %s — skipping",
+                         uniprot_id, protein_id)
+            else:
+                ok = download_protein(uniprot_id, data_root)
+                if not ok:
+                    notify(uniprot_id, "failed", "download")
+                    log.error("[%s] Download failed — skipping all steps", uniprot_id)
+                    continue
+                # Resolve the protein_id assigned by the API
+                protein_id = _already_downloaded(uniprot_id, data_root)
+                if not protein_id:
+                    log.error("[%s] Could not resolve protein_id after download", uniprot_id)
+                    notify(uniprot_id, "failed", "protein_id resolution")
+                    continue
+                notify(uniprot_id, "complete", "download")
+
+            # ── Steps 2-6: Full per-protein pipeline ──────────────────────────
+            all_results[protein_id] = _run_protein(protein_id, data_root, log)
+
+    _log_summary(all_results, log)
+    log.info("Total pipeline time: %.1f s", t_run.seconds)
+
+
+if __name__ == "__main__":
+    main()
