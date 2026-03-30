@@ -1,0 +1,43 @@
+# CI: lint and test on every push/PR to main.
+#
+# SCOPE LIMITATION: This workflow only runs ruff (lint/format) and pytest.
+# It does NOT run the actual pipeline stages (download, PDB2PQR, APBS, MSMS,
+# mesh generation, ESP sampling) because those require compiled external tools
+# and a configured data_root — neither of which is available on GitHub runners.
+# Tests that touch those tools must mock subprocess.run. See docs/testing_guide.md.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install ruff pytest
+          pip install -e . --no-deps
+
+      - name: Lint (ruff check)
+        run: ruff check src/ scripts/ pipelines/
+
+      - name: Format check (ruff format)
+        run: ruff format --check src/ scripts/ pipelines/
+
+      - name: Run tests
+        # Exit code 5 = "no tests collected" — treated as success while
+        # tests/ is still being populated. Once test_*.py files exist,
+        # pytest failures will correctly fail CI.
+        run: pytest tests/ -v || [ $? -eq 5 ]
