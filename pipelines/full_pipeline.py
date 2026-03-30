@@ -14,6 +14,7 @@ Runs all pipeline steps sequentially for each selected protein:
 Each step is skipped if its output files already exist.
 Failed steps are logged to the per-protein log file.
 A single terminal line is printed when each protein completes or fails.
+Pipeline status (pipeline_complete, pipeline_steps) is written to metadata.
 
 Usage:
     python pipeline/full_pipeline.py --id-file data/protein_ids.txt
@@ -197,7 +198,15 @@ def main():
                 notify(uniprot_id, "complete", "download")
 
             # ── Steps 2-6: Full per-protein pipeline ──────────────────────────
-            all_results[protein_id] = _run_protein(protein_id, data_root, log)
+            step_results = _run_protein(protein_id, data_root, log)
+            all_results[protein_id] = step_results
+            try:
+                update_metadata(protein_id, data_root=data_root, data={
+                    "pipeline_steps"    : step_results,
+                    "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
+                })
+            except Exception:
+                pass  # don't let a metadata write failure mask pipeline results
 
     _log_summary(all_results, log)
     log.info("Total pipeline time: %.1f s", t_run.seconds)
