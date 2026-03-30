@@ -63,3 +63,34 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# ── Testing and coverage ──────────────────────────────────────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+.mypy_cache/
+
+# ── Model checkpoints ─────────────────────────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# ── Scientific data files (large; use data_root in config.yaml instead) ───────
+*.dx
+*.pqr
+*.vtk
+*.npz
+!data/test_ids.txt
+!tests/**/*.npz
+
+# ── APBS / MSMS runtime artifacts ────────────────────────────────────────────
+io.mc
+*.mc
+*.in
+
+# ── Linter / profiler caches ──────────────────────────────────────────────────
+.ruff_cache/
+*.prof

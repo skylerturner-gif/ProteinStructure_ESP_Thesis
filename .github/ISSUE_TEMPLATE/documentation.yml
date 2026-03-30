@@ -1,0 +1,32 @@
+name: Documentation Update
+description: Missing, incorrect, or outdated documentation
+labels: ["documentation"]
+body:
+  - type: dropdown
+    id: doc_type
+    attributes:
+      label: Document
+      options:
+        - "README.md"
+        - "CLAUDE.md"
+        - "docs/development_workflow.md"
+        - "docs/testing_guide.md"
+        - "docs/github_setup.md"
+        - "Module docstring (src/)"
+        - "config.template.yaml"
+        - "Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is missing or incorrect
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested content (optional)
+      description: If you have a draft or know what should be written, include it here.

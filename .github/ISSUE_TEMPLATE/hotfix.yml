@@ -1,0 +1,33 @@
+name: Hotfix
+description: Urgent fix that is blocking data generation, model training, or a deadline
+labels: ["hotfix", "priority: high"]
+body:
+  - type: textarea
+    id: broken
+    attributes:
+      label: What is broken
+      description: Describe the failure clearly and specifically.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Which proteins, pipeline stages, or experiments are blocked?
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Proposed fix (optional)
+      description: If you already know the fix, describe it here.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: This is blocking further data generation or model training
+        - label: I will create a `hotfix/<issue-number>-short-description` branch (not committing directly to main)

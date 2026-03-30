@@ -1,0 +1,78 @@
+name: Bug Report
+description: Something is broken in the pipeline or produces incorrect output
+labels: ["bug", "needs-triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong? What did you observe?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the exact script command and flags you ran.
+      placeholder: |
+        python scripts/02_run_esp_calculations.py --filter --min-sequence-length 100
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behavior
+      description: What should have happened? What happened instead?
+    validations:
+      required: true
+
+  - type: input
+    id: protein_id
+    attributes:
+      label: Protein ID where it failed (optional)
+      placeholder: "e.g. AF-Q16613-F1"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output (optional)
+      description: Paste relevant lines from the per-protein log or terminal output.
+      render: shell
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options:
+        - "Stage 1: Download (af_api)"
+        - "Stage 2: ESP Calculations (pdb2pqr / apbs)"
+        - "Stage 3: Surface Generation (mesh)"
+        - "Stage 4: ESP Sampling (esp_mapping)"
+        - "Stage 5: Evaluation (metrics)"
+        - "Stage 6: Visualization"
+        - "ML: Dataset / Graph Builder"
+        - "ML: Model (EGNN)"
+        - "ML: Training / Evaluation"
+        - "Infrastructure / Utils"
+        - "Other"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, OS, conda env name
+      placeholder: "Python 3.11, macOS 15, protein_esp"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked the per-protein log file at `<data_root>/<protein_id>/logs/<protein_id>.log`
+        - label: I verified that paths in `config.yaml` are correct

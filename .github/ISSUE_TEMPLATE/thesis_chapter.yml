@@ -1,0 +1,72 @@
+name: Thesis Chapter / Writing Task
+description: Track thesis writing, literature review, experiment documentation, and figure generation
+labels: ["thesis-writing"]
+body:
+  - type: dropdown
+    id: chapter
+    attributes:
+      label: Chapter / section
+      options:
+        - "Chapter 1: Introduction"
+        - "Chapter 2: Background & Literature Review"
+        - "Chapter 3: Methods — Data Pipeline"
+        - "Chapter 3: Methods — EGNN Architecture"
+        - "Chapter 4: Experiments & Results"
+        - "Chapter 5: Discussion"
+        - "Chapter 6: Conclusion"
+        - "Appendix"
+        - "Figures / Tables"
+        - "Abstract"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: task_type
+    attributes:
+      label: Task type
+      options:
+        - "First draft"
+        - "Revision"
+        - "Literature search"
+        - "Figure generation"
+        - "Table generation"
+        - "Proofreading"
+        - "Advisor feedback integration"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Be specific — e.g. "Write the APBS background section explaining the Poisson-Boltzmann equation and finite difference solver."
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: Key references or results needed (optional)
+      description: Papers to cite, experiment numbers to reference, figures to include.
+
+  - type: input
+    id: target_length
+    attributes:
+      label: Target word count or page count (optional)
+      placeholder: "e.g. ~800 words, ~2 pages"
+
+  - type: input
+    id: deadline
+    attributes:
+      label: Deadline (optional)
+      placeholder: "e.g. 2026-05-15"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Related experiments have been run and results are available
+        - label: Required figures have been generated
+        - label: This section has been shared with advisor for feedback

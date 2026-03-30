@@ -1,0 +1,31 @@
+name: Refactoring
+description: Code quality improvement that does not change external behavior
+labels: ["refactor"]
+body:
+  - type: textarea
+    id: current
+    attributes:
+      label: Current situation
+      description: What is awkward, duplicated, or hard to maintain about the existing code?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed refactoring
+      description: What does the end state look like?
+
+  - type: input
+    id: files
+    attributes:
+      label: Files affected
+      placeholder: "e.g. src/utils/helpers.py, src/utils/io.py"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: This does not change observable external behavior
+        - label: Tests (if any) still pass after refactoring

@@ -1,0 +1,52 @@
+name: Feature Development
+description: Propose a new feature or capability for the pipeline or model
+labels: ["feature", "needs-triage"]
+body:
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem or motivation
+      description: What gap does this fill? What is currently missing or painful?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe what to build and how it should work.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage affected
+      options:
+        - "Stage 1: Download (af_api)"
+        - "Stage 2: ESP Calculations (pdb2pqr / apbs)"
+        - "Stage 3: Surface Generation (mesh)"
+        - "Stage 4: ESP Sampling (esp_mapping)"
+        - "Stage 5: Evaluation (metrics)"
+        - "Stage 6: Visualization"
+        - "ML: Dataset / Graph Builder"
+        - "ML: Model (EGNN)"
+        - "ML: Training / Evaluation"
+        - "Infrastructure / Utils"
+        - "Other"
+    validations:
+      required: true
+
+  - type: input
+    id: module
+    attributes:
+      label: Related module (optional)
+      placeholder: "e.g. src/data/graph_builder.py"
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate
+        - label: This feature is in scope for the current thesis milestone
