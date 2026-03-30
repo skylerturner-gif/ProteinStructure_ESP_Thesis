@@ -108,6 +108,39 @@ def fix_apbs_input(p: ProteinPaths, plog) -> None:
     plog.info("Fixed APBS input paths → %s", p.apbs_in_path.name)
 
 
+# ── PQR column fixer ─────────────────────────────────────────────────────────
+
+def fix_pqr_columns(pqr_path: Path, plog) -> int:
+    """
+    Repair merged coordinate/charge/radius columns in a .pqr file.
+
+    PDB2PQR occasionally omits whitespace between adjacent negative numbers
+    when coordinate magnitudes exceed 99.999 Å (e.g. '-19.098-100.028').
+    APBS and downstream parsers both require whitespace-separated columns.
+
+    Inserts a space before any '-' that immediately follows a digit or '.'.
+    Only ATOM/HETATM lines are modified; all other lines are passed through.
+
+    Returns:
+        Number of lines that were corrected.
+    """
+    lines = pqr_path.read_text().splitlines(keepends=True)
+    fixed_lines = []
+    n_fixed = 0
+    for line in lines:
+        if line.startswith(("ATOM", "HETATM")):
+            new_line = re.sub(r'(?<=[0-9.])-', ' -', line)
+            if new_line != line:
+                n_fixed += 1
+            fixed_lines.append(new_line)
+        else:
+            fixed_lines.append(line)
+    if n_fixed:
+        pqr_path.write_text("".join(fixed_lines))
+        plog.info("Fixed %d merged-column line(s) in %s", n_fixed, pqr_path.name)
+    return n_fixed
+
+
 # ── Core PDB2PQR runner ───────────────────────────────────────────────────────
 
 def _run_pdb2pqr(p: ProteinPaths, plog) -> bool:
@@ -173,6 +206,7 @@ def process_pdb2pqr(protein_id: str, data_root: Path) -> bool:
     if not ok:
         return False
 
+    fix_pqr_columns(p.pqr_path, plog)
     plog.info("PDB2PQR complete: %.2f s", t.seconds)
     fix_apbs_input(p, plog)
 
