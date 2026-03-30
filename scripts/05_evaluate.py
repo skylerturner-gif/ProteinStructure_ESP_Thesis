@@ -16,16 +16,7 @@ from src.analysis.metrics import evaluate_protein
 from src.utils.config import get_config, get_data_root
 from src.utils.filter import add_filter_args, get_protein_ids_from_args
 from src.utils.helpers import get_pipeline_logger, notify
-from src.utils.io import load_metadata
 from src.utils.paths import ProteinPaths
-
-
-def _already_evaluated(protein_id: str, data_root: Path) -> bool:
-    try:
-        meta = load_metadata(protein_id, data_root)
-        return "pearson_r_pdb" in meta and "pearson_r_pqr" in meta
-    except FileNotFoundError:
-        return False
 
 
 def main():
@@ -49,7 +40,8 @@ def main():
     log.info("Evaluation for %d proteins", len(protein_ids))
 
     for protein_id in protein_ids:
-        if not args.force and _already_evaluated(protein_id, data_root):
+        p = ProteinPaths(protein_id, data_root)
+        if not args.force and p.is_evaluated():
             log.info("[%s] Already evaluated — skipping", protein_id)
             notify(protein_id, "skipped", "already evaluated")
             continue

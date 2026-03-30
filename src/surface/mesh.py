@@ -19,8 +19,6 @@ Output .npz contains:
     n_verts   scalar int      — number of vertices
 
 Metadata fields added:
-    mesh_<suffix>_path   — path to .npz file
-    vtk_<suffix>_path    — path to .vtk file
     n_vertices_<suffix>  — number of surface vertices
     ses_area_<suffix>    — SES area in Å²
 
@@ -174,8 +172,6 @@ def run_msms(
             ],
             check=True, capture_output=True, text=True,
         )
-        plog.info("MSMS stdout:\n%s", result.stdout)
-        plog.info("MSMS stderr:\n%s", result.stderr)
     except subprocess.CalledProcessError as e:
         plog.error("MSMS failed: %s", e)
         raise
