@@ -105,5 +105,20 @@ class ProteinPaths:
             self.pqr_laplacian_path,
         ])
 
+    def is_evaluated(self) -> bool:
+        """
+        Return True if ESP evaluation metrics have been written to metadata.
+        Checks for pearson_r_pdb and pearson_r_pqr keys in the metadata JSON.
+        Returns False if metadata does not exist or is missing either key.
+        """
+        if not self.metadata_path.exists():
+            return False
+        try:
+            import json
+            meta = json.loads(self.metadata_path.read_text())
+            return "pearson_r_pdb" in meta and "pearson_r_pqr" in meta
+        except Exception:
+            return False
+
     def __repr__(self) -> str:
         return f"ProteinPaths(protein_id={self.protein_id!r}, data_root={self.data_root!r})"

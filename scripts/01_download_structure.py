@@ -11,18 +11,10 @@ Usage:
 import argparse
 from pathlib import Path
 
-from src.structure.af_api import download_structures, read_uniprot_ids
+from src.structure.af_api import download_structures, find_downloaded_protein_id, read_uniprot_ids
 from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger, notify
 from src.utils.paths import ProteinPaths
-
-
-def _already_downloaded(uniprot_id: str, data_root: Path) -> bool:
-    for protein_dir in data_root.iterdir():
-        if protein_dir.is_dir() and uniprot_id in protein_dir.name:
-            if (protein_dir / "structure" / f"{protein_dir.name}.pdb").exists():
-                return True
-    return False
 
 
 def main():
@@ -41,7 +33,7 @@ def main():
         return
 
     all_ids = read_uniprot_ids(args.id_file)
-    pending = [uid for uid in all_ids if not _already_downloaded(uid, data_root)]
+    pending = [uid for uid in all_ids if not find_downloaded_protein_id(uid, data_root)]
     skipped = len(all_ids) - len(pending)
 
     if skipped:

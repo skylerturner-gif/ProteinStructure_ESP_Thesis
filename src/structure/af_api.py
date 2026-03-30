@@ -289,6 +289,26 @@ def _download_protein(uniprot_id: str, data_root: Path) -> bool:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def find_downloaded_protein_id(uniprot_id: str, data_root: Path) -> str | None:
+    """
+    Search data_root for a protein directory matching a UniProt ID.
+    Returns the protein_id (directory name) if a downloaded PDB is found,
+    otherwise None.
+
+    Args:
+        uniprot_id: UniProt accession ID (e.g. "Q16613")
+        data_root:  root of the external data directory
+
+    Returns:
+        protein_id string (e.g. "AF-Q16613-F1") or None if not found.
+    """
+    for protein_dir in Path(data_root).iterdir():
+        if protein_dir.is_dir() and uniprot_id in protein_dir.name:
+            if (protein_dir / "structure" / f"{protein_dir.name}.pdb").exists():
+                return protein_dir.name
+    return None
+
+
 def download_protein(uniprot_id: str, data_root: Path) -> bool:
     """
     Download AlphaFold structure for a single UniProt ID.

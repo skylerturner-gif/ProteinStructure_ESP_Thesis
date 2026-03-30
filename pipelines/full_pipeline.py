@@ -26,35 +26,13 @@ from pathlib import Path
 from src.analysis.metrics import evaluate_protein
 from src.electrostatics.run_apbs import process_apbs
 from src.electrostatics.run_pdb2pqr import process_pdb2pqr
-from src.structure.af_api import download_protein, read_uniprot_ids
+from src.structure.af_api import download_protein, find_downloaded_protein_id, read_uniprot_ids
 from src.surface.esp_mapping import sample_esp
 from src.surface.mesh import build_mesh
 from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger, notify, timer
-from src.utils.io import load_metadata, update_metadata
+from src.utils.io import update_metadata
 from src.utils.paths import ProteinPaths
-
-
-# ── Skip checks ───────────────────────────────────────────────────────────────
-
-def _already_downloaded(uniprot_id: str, data_root: Path) -> str | None:
-    """
-    Check if a UniProt ID has already been downloaded.
-    Returns the protein_id (directory name) if found, otherwise None.
-    """
-    for protein_dir in data_root.iterdir():
-        if protein_dir.is_dir() and uniprot_id in protein_dir.name:
-            if (protein_dir / "structure" / f"{protein_dir.name}.pdb").exists():
-                return protein_dir.name
-    return None
-
-
-def _already_evaluated(protein_id: str, data_root: Path) -> bool:
-    try:
-        meta = load_metadata(protein_id, data_root)
-        return "pearson_r_pdb" in meta and "pearson_r_pqr" in meta
-    except FileNotFoundError:
-        return False
 
 
 # ── Per-protein pipeline ──────────────────────────────────────────────────────
@@ -122,7 +100,7 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
             step_results["esp_sampling"] = "success" if ok else "failed"
 
         # ── Step 6: Evaluate ──────────────────────────────────────────────────
-        if _already_evaluated(protein_id, data_root):
+        if p.is_evaluated():
             step_results["evaluate"] = "skipped"
         elif not p.all_sampled_exist():
             plog.error("[%s] Step 6: sampled files missing", protein_id)
@@ -200,7 +178,7 @@ def main():
         for uniprot_id in uniprot_ids:
 
             # ── Step 1: Download ──────────────────────────────────────────────
-            protein_id = _already_downloaded(uniprot_id, data_root)
+            protein_id = find_downloaded_protein_id(uniprot_id, data_root)
             if protein_id:
                 log.info("[%s] Already downloaded as %s — skipping",
                          uniprot_id, protein_id)
@@ -211,7 +189,7 @@ def main():
                     log.error("[%s] Download failed — skipping all steps", uniprot_id)
                     continue
                 # Resolve the protein_id assigned by the API
-                protein_id = _already_downloaded(uniprot_id, data_root)
+                protein_id = find_downloaded_protein_id(uniprot_id, data_root)
                 if not protein_id:
                     log.error("[%s] Could not resolve protein_id after download", uniprot_id)
                     notify(uniprot_id, "failed", "protein_id resolution")
