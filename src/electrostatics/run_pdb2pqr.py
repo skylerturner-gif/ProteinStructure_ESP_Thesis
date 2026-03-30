@@ -14,6 +14,7 @@ metadata JSON.
 
 Metadata fields added:
     n_heavy_atoms   — number of non-hydrogen atoms
+    net_charge      — sum of partial charges across all atoms (elementary charge units)
 
 Usage (from a script):
     from src.electrostatics.run_pdb2pqr import process_pdb2pqr
@@ -51,6 +52,32 @@ def count_heavy_atoms(pqr_path: Path) -> int:
             if not atom_name.startswith("H"):
                 count += 1
     return count
+
+
+def compute_net_charge(pqr_path: Path) -> float:
+    """
+    Compute the net charge of a protein by summing the charge column
+    (column index 8) across all ATOM/HETATM records in a .pqr file.
+
+    Args:
+        pqr_path: path to the .pqr file
+
+    Returns:
+        Net charge in elementary charge units (e), rounded to 4 decimal places.
+    """
+    total = 0.0
+    with open(pqr_path) as f:
+        for line in f:
+            if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                continue
+            parts = line.split()
+            if len(parts) < 9:
+                continue
+            try:
+                total += float(parts[8])
+            except ValueError:
+                continue
+    return round(total, 4)
 
 
 # ── APBS input path fixer ─────────────────────────────────────────────────────
@@ -150,10 +177,12 @@ def process_pdb2pqr(protein_id: str, data_root: Path) -> bool:
     fix_apbs_input(p, plog)
 
     n_heavy = count_heavy_atoms(p.pqr_path)
-    plog.info("Heavy atoms: %d", n_heavy)
+    net_charge = compute_net_charge(p.pqr_path)
+    plog.info("Heavy atoms: %d  Net charge: %.4f e", n_heavy, net_charge)
 
     update_metadata(protein_id, data_root=data_root, data={
         "n_heavy_atoms"    : n_heavy,
+        "net_charge"       : net_charge,
         "time_pdb2pqr_sec" : t.rounded,
     })
 
