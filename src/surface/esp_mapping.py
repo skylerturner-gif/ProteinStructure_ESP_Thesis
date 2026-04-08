@@ -3,22 +3,22 @@ src/surface/esp_mapping.py
 
 ESP surface sampling — interpolated and Laplacian reconstruction.
 
-For a given protein ID, loads the PDB mesh (.npz), PQR mesh (_pqr.npz),
-and shared .dx ESP grid, then runs both no-H and with-H sampling
-sequentially. Each variant produces two output files:
+For a given protein ID, loads the PQR mesh (.npz) and shared .dx ESP grid,
+then produces two output files:
 
-    {id}_pdb_mesh_interp.npz     — nearest-neighbor ESP, no H
-    {id}_pdb_mesh_laplacian.npz  — Laplacian-reconstructed ESP, no H
-    {id}_pqr_mesh_interp.npz     — nearest-neighbor ESP, with H
-    {id}_pqr_mesh_laplacian.npz  — Laplacian-reconstructed ESP, with H
+    {id}_pqr_mesh_interp.npz     — nearest-neighbor ESP (with H)
+    {id}_pqr_mesh_laplacian.npz  — Laplacian-reconstructed ESP (with H)
+
+The Laplacian reconstruction uses 5% of vertices selected by a
+curvature-prioritised sampler with minimum spacing (see curvature_sampling).
 
 All outputs are saved to the protein's esp/ subdirectory.
 Metrics (Pearson r, RMSE) are computed separately via src.analysis.metrics.
-No metadata fields are written — paths are derived from ProteinPaths.
+No metadata fields are written here — paths are derived from ProteinPaths.
 
 Config keys used:
     esp_mapping.normal_offset
-    esp_mapping.subsample_n
+    esp_mapping.sample_frac
 
 Usage (from a script):
     from src.surface.esp_mapping import sample_esp
@@ -139,64 +139,134 @@ def interpolate_faces_from_verts(faces: np.ndarray, esp_verts: np.ndarray) -> np
     return ((v0 + v1 + v2) / 3.0).astype(np.float32)
 
 
-# ── Cotangent Laplacian ───────────────────────────────────────────────────────
+# ── Curvature ─────────────────────────────────────────────────────────────────
 
-def build_cotangent_laplacian(verts: np.ndarray, faces: np.ndarray) -> sp.csr_matrix:
+def vertex_curvature_fast(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """
-    Build the cotangent-weighted Laplacian matrix for curvature estimation.
-
-    For each directed edge (v1, v2) opposite angle at v0:
-        weight = cot(angle at v0) = dot(a, b) / |cross(a, b)|
-    """
-    n    = len(verts)
-    I, J, W = [], [], []
-
-    for f in faces:
-        for i in range(3):
-            v0 = f[i]
-            v1 = f[(i + 1) % 3]
-            v2 = f[(i + 2) % 3]
-            a  = verts[v1] - verts[v0]
-            b  = verts[v2] - verts[v0]
-            cross_norm = np.linalg.norm(np.cross(a, b))
-            if cross_norm < 1e-12:
-                continue
-            cot = np.dot(a, b) / cross_norm
-            I.extend([v1, v2])
-            J.extend([v2, v1])
-            W.extend([cot, cot])
-
-    L_off = sp.coo_matrix((W, (I, J)), shape=(n, n)).tocsr()
-    diag  = -np.array(L_off.sum(axis=1)).flatten()
-    return L_off + sp.diags(diag)
-
-
-def vertex_curvature(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    """
-    Approximate mean curvature magnitude via cotangent Laplacian:
+    Vectorized cotangent-Laplacian mean curvature magnitude.
         H_i = ||L * verts||_2  (row-wise 2-norm)
     """
-    L  = build_cotangent_laplacian(verts, faces)
+    n = len(verts)
+    all_rows, all_cols, all_w = [], [], []
+
+    for i in range(3):
+        v0, v1, v2 = faces[:, i], faces[:, (i + 1) % 3], faces[:, (i + 2) % 3]
+        a           = verts[v1] - verts[v0]
+        b           = verts[v2] - verts[v0]
+        cross_norm  = np.linalg.norm(np.cross(a, b), axis=1)
+        dot         = np.einsum("ij,ij->i", a, b)
+        valid       = cross_norm > 1e-12
+        cot         = np.where(valid, dot / np.where(valid, cross_norm, 1.0), 0.0)
+
+        v1v, v2v, cotv = v1[valid], v2[valid], cot[valid]
+        all_rows.extend([v1v, v2v])
+        all_cols.extend([v2v, v1v])
+        all_w.extend([cotv, cotv])
+
+    rows = np.concatenate(all_rows)
+    cols = np.concatenate(all_cols)
+    w    = np.concatenate(all_w)
+
+    L_off = sp.coo_matrix((w, (rows, cols)), shape=(n, n)).tocsr()
+    diag  = -np.array(L_off.sum(axis=1)).flatten()
+    L     = L_off + sp.diags(diag)
+
     Lv = L @ verts
     return np.linalg.norm(Lv, axis=1).astype(np.float32)
 
 
-# ── Curvature-biased sampling ─────────────────────────────────────────────────
+# ── Curvature-prioritised sampling with minimum spacing ───────────────────────
 
-def curvature_sampling(verts: np.ndarray, faces: np.ndarray, k: int) -> np.ndarray:
+def curvature_sampling(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    k: int,
+    ses_area: float,
+    rng: np.random.Generator = None,
+) -> np.ndarray:
     """
-    Sample k vertex indices with probability proportional to curvature.
-    High-curvature regions (pockets, ridges) are sampled more densely.
+    Sample k vertex indices using curvature-prioritised selection with
+    minimum spacing enforcement.
+
+    Vertices are visited in descending curvature order; a vertex is accepted
+    only if no already-selected vertex lies within radius r, where
+    r = sqrt(ses_area / π·k).  If the greedy pass yields fewer than k
+    vertices, remaining slots are filled from the rejected pool (still in
+    curvature order) with no spacing constraint.
+
+    Args:
+        verts:    (N, 3) float32 vertex positions
+        faces:    (F, 3) int64 face indices
+        k:        target number of vertices to select
+        ses_area: solvent-excluded surface area in Å² (used to scale r)
+        rng:      optional numpy Generator for tie-breaking; defaults to seed 0
 
     Returns:
-        Sorted index array of length k.
+        Sorted int64 index array of length k (or fewer if mesh is small).
     """
-    curv = vertex_curvature(verts, faces)
-    prob = curv + 1e-6
-    prob /= prob.sum()
-    rng = np.random.default_rng(0)
-    idx = rng.choice(len(verts), size=k, replace=False, p=prob)
-    return np.sort(idx)
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    curv = vertex_curvature_fast(verts, faces)
+    n    = len(verts)
+    k    = min(k, n)
+
+    r    = np.sqrt(ses_area / (np.pi * k))
+    r2   = float(r * r)
+    cs   = float(r) + 1e-9
+    mins = verts.min(axis=0)
+
+    offsets = [(ox, oy, oz)
+               for ox in (-1, 0, 1)
+               for oy in (-1, 0, 1)
+               for oz in (-1, 0, 1)]
+
+    noise       = rng.random(n) * 1e-9
+    visit_order = np.argsort(-(curv + noise))
+
+    grid_h   = {}
+    selected = []
+    rejected = []
+
+    for idx in visit_order:
+        vx = float(verts[idx, 0])
+        vy = float(verts[idx, 1])
+        vz = float(verts[idx, 2])
+        cx = int((vx - mins[0]) / cs)
+        cy = int((vy - mins[1]) / cs)
+        cz = int((vz - mins[2]) / cs)
+
+        ok = True
+        for ox, oy, oz in offsets:
+            pts = grid_h.get((cx + ox, cy + oy, cz + oz))
+            if pts is None:
+                continue
+            for px, py, pz in pts:
+                if (vx - px) ** 2 + (vy - py) ** 2 + (vz - pz) ** 2 < r2:
+                    ok = False
+                    break
+            if not ok:
+                break
+
+        if ok:
+            selected.append(idx)
+            cell = (cx, cy, cz)
+            if cell in grid_h:
+                grid_h[cell].append((vx, vy, vz))
+            else:
+                grid_h[cell] = [(vx, vy, vz)]
+            if len(selected) == k:
+                break
+        else:
+            rejected.append(idx)
+
+    if len(selected) < k:
+        need = k - len(selected)
+        selected.extend(rejected[:need])
+        log.info("Curvature sampling: spacing-pass gave %d / %d — filled %d from rejected pool",
+                 len(selected) - need, k, need)
+
+    return np.sort(np.array(selected, dtype=np.int64))
 
 
 # ── Laplacian reconstruction ──────────────────────────────────────────────────
@@ -213,7 +283,6 @@ def laplacian_reconstruct(
 
     Uses unweighted (combinatorial) Laplacian for robustness — all edge
     weights are 1, avoiding singularities from degenerate triangles.
-    Cotangent weights are used only for curvature-biased sampling above.
 
     Solves:  L_uu * x_unknown = -L_uk * x_known
 
@@ -236,7 +305,7 @@ def laplacian_reconstruct(
     L    = D - A
 
     mask        = np.ones(n, dtype=bool)
-    mask[known_idx] = False           # True = unknown, False = known
+    mask[known_idx] = False
 
     L_uu = L[mask][:, mask]
     L_uk = L[mask][:, ~mask]
@@ -247,9 +316,9 @@ def laplacian_reconstruct(
         x_unknown = spla.spsolve(L_uu, rhs)
     log.info("Laplacian solve: %.2f s", t.seconds)
 
-    x         = np.zeros(n, dtype=np.float32)
-    x[~mask]  = known_values
-    x[mask]   = x_unknown
+    x        = np.zeros(n, dtype=np.float32)
+    x[~mask] = known_values
+    x[mask]  = x_unknown
     return x
 
 
@@ -261,101 +330,27 @@ def _save_npz(
     faces: np.ndarray,
     esp_verts: np.ndarray,
     esp_faces: np.ndarray,
-    subsample_n: int = None,
+    sample_frac: float = None,
 ) -> None:
     kwargs = dict(verts=verts, faces=faces,
                   esp_verts=esp_verts, esp_faces=esp_faces)
-    if subsample_n is not None:
-        kwargs["subsample_n"] = np.array(subsample_n)
+    if sample_frac is not None:
+        kwargs["sample_frac"] = np.array(sample_frac)
     np.savez_compressed(path, **kwargs)
     log.info("Saved → %s  (%d verts, %d faces)", path.name, len(verts), len(faces))
-
-
-# ── Per-variant sampling ──────────────────────────────────────────────────────
-
-def _sample_variant(
-    mesh_npz: Path,
-    p: ProteinPaths,
-    suffix: str,
-    normal_offset: float,
-    subsample_n: int,
-    plog,
-) -> float:
-    """
-    Run interpolated and Laplacian ESP sampling for one mesh variant.
-
-    Args:
-        mesh_npz:      path to the mesh .npz file
-        p:             ProteinPaths instance for this protein
-        suffix:        'pdb' or 'pqr'
-        normal_offset: outward normal offset in Å
-        subsample_n:   keep every Nth vertex as known for Laplacian
-        plog:          per-protein logger
-
-    Returns:
-        elapsed time in seconds
-    """
-    stem = mesh_npz.stem
-
-    data    = np.load(mesh_npz)
-    verts   = data["verts"]
-    normals = data["normals"]
-    faces   = data["faces"]
-    plog.info("[%s] Loaded mesh: %d verts, %d faces", suffix, len(verts), len(faces))
-
-    axes, grid = read_dx(p.dx_path)
-
-    sample_pts = offset_points(verts, normals, normal_offset)
-
-    with timer() as t:
-        # ── Interpolated ESP ──────────────────────────────────────────────────
-        esp_verts_interp = nearest_neighbor_esp(axes, grid, sample_pts)
-        esp_faces_interp = interpolate_faces_from_verts(faces, esp_verts_interp)
-
-        interp_path = p.esp_dir / f"{stem}_interp.npz"
-        _save_npz(interp_path, verts, faces, esp_verts_interp, esp_faces_interp)
-        plog.info("[%s] Interp ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
-                  suffix,
-                  esp_verts_interp.min(), esp_verts_interp.max(),
-                  esp_faces_interp.min(), esp_faces_interp.max())
-
-        # ── Laplacian reconstruction ──────────────────────────────────────────
-        k = len(verts) // subsample_n
-        plog.info("[%s] Curvature sampling: k=%d of %d vertices (N=%d)",
-                  suffix, k, len(verts), subsample_n)
-
-        known_idx     = curvature_sampling(verts, faces, k)
-        known_values  = esp_verts_interp[known_idx]
-        esp_verts_lap = laplacian_reconstruct(verts, faces, known_idx, known_values)
-        esp_faces_lap = interpolate_faces_from_verts(faces, esp_verts_lap)
-
-        lap_path = p.esp_dir / f"{stem}_laplacian.npz"
-        _save_npz(lap_path, verts, faces, esp_verts_lap, esp_faces_lap,
-                  subsample_n=subsample_n)
-        plog.info("[%s] Laplacian ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
-                  suffix,
-                  esp_verts_lap.min(), esp_verts_lap.max(),
-                  esp_faces_lap.min(), esp_faces_lap.max())
-
-    plog.info("[%s] ESP sampling complete: %.2f s", suffix, t.seconds)
-    return t.rounded
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def sample_esp(protein_id: str, data_root: Path) -> bool:
     """
-    Run ESP surface sampling for both PDB (no-H) and PQR (with-H) mesh
-    variants for a protein, and update its metadata JSON with timing.
+    Run ESP surface sampling for the PQR mesh variant of a protein.
 
     Expects:
-        <data_root>/<protein_id>/mesh/<protein_id>_pdb_mesh.npz
         <data_root>/<protein_id>/mesh/<protein_id>_pqr_mesh.npz
         <data_root>/<protein_id>/electrostatics/<protein_id>.dx
 
-    Produces (per variant):
-        <data_root>/<protein_id>/esp/<protein_id>_pdb_mesh_interp.npz
-        <data_root>/<protein_id>/esp/<protein_id>_pdb_mesh_laplacian.npz
+    Produces:
         <data_root>/<protein_id>/esp/<protein_id>_pqr_mesh_interp.npz
         <data_root>/<protein_id>/esp/<protein_id>_pqr_mesh_laplacian.npz
 
@@ -369,7 +364,7 @@ def sample_esp(protein_id: str, data_root: Path) -> bool:
     p    = ProteinPaths(protein_id, data_root)
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
 
-    missing = [f for f in [p.pdb_mesh_path, p.pqr_mesh_path, p.dx_path] if not f.exists()]
+    missing = [f for f in [p.pqr_mesh_path, p.dx_path] if not f.exists()]
     if missing:
         for f in missing:
             plog.error("Missing input file: %s", f)
@@ -377,18 +372,49 @@ def sample_esp(protein_id: str, data_root: Path) -> bool:
 
     cfg           = get_config()["esp_mapping"]
     normal_offset = cfg["normal_offset"]
-    subsample_n   = cfg["subsample_n"]
+    sample_frac   = cfg["sample_frac"]
 
-    plog.info("── ESP sampling  normal_offset=%.2f Å  subsample_n=%d ──",
-              normal_offset, subsample_n)
+    plog.info("── ESP sampling  normal_offset=%.2f Å  sample_frac=%.2f ──",
+              normal_offset, sample_frac)
 
-    timing = {}
-    for mesh_npz, suffix in [(p.pdb_mesh_path, "pdb"), (p.pqr_mesh_path, "pqr")]:
-        elapsed = _sample_variant(
-            mesh_npz, p, suffix, normal_offset, subsample_n, plog
-        )
-        timing[f"time_esp_sampling_{suffix}_sec"] = elapsed
+    data    = np.load(p.pqr_mesh_path)
+    verts   = data["verts"]
+    normals = data["normals"]
+    faces   = data["faces"]
+    ses_area = float(data["ses_area"])
+    plog.info("Loaded PQR mesh: %d verts, %d faces", len(verts), len(faces))
 
-    update_metadata(protein_id, data_root=data_root, data=timing)
-    plog.info("ESP sampling complete")
+    axes, grid = read_dx(p.dx_path)
+    sample_pts = offset_points(verts, normals, normal_offset)
+
+    with timer() as t:
+        # ── Interpolated ESP ──────────────────────────────────────────────────
+        esp_verts_interp = nearest_neighbor_esp(axes, grid, sample_pts)
+        esp_faces_interp = interpolate_faces_from_verts(faces, esp_verts_interp)
+
+        _save_npz(p.pqr_interp_path, verts, faces, esp_verts_interp, esp_faces_interp)
+        plog.info("Interp ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
+                  esp_verts_interp.min(), esp_verts_interp.max(),
+                  esp_faces_interp.min(), esp_faces_interp.max())
+
+        # ── Laplacian reconstruction ──────────────────────────────────────────
+        k = max(1, round(sample_frac * len(verts)))
+        plog.info("Curvature sampling: k=%d of %d vertices (%.1f%%)",
+                  k, len(verts), sample_frac * 100)
+
+        known_idx     = curvature_sampling(verts, faces, k, ses_area)
+        known_values  = esp_verts_interp[known_idx]
+        esp_verts_lap = laplacian_reconstruct(verts, faces, known_idx, known_values)
+        esp_faces_lap = interpolate_faces_from_verts(faces, esp_verts_lap)
+
+        _save_npz(p.pqr_laplacian_path, verts, faces, esp_verts_lap, esp_faces_lap,
+                  sample_frac=sample_frac)
+        plog.info("Laplacian ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
+                  esp_verts_lap.min(), esp_verts_lap.max(),
+                  esp_faces_lap.min(), esp_faces_lap.max())
+
+    update_metadata(protein_id, data_root=data_root, data={
+        "time_esp_sampling_sec": t.rounded,
+    })
+    plog.info("ESP sampling complete: %.2f s", t.seconds)
     return True

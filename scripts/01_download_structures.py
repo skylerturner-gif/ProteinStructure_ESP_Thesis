@@ -3,6 +3,8 @@ scripts/01_download_structures.py
 
 Download AlphaFold structures for a list of UniProt IDs.
 
+Downloads all available fragments (F1, F2, ...) for each UniProt ID.
+
 Usage:
     python scripts/01_download_structures.py --id-file data/protein_ids.txt
     python scripts/01_download_structures.py --id-file data/protein_ids.txt --data-root /path/to/data
@@ -11,10 +13,9 @@ Usage:
 import argparse
 from pathlib import Path
 
-from src.structure.af_api import download_structures, find_downloaded_protein_id, read_uniprot_ids
+from src.structure.af_api import download_structures, find_downloaded_protein_ids, read_uniprot_ids
 from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger, notify
-from src.utils.paths import ProteinPaths
 
 
 def main():
@@ -33,11 +34,11 @@ def main():
         return
 
     all_ids = read_uniprot_ids(args.id_file)
-    pending = [uid for uid in all_ids if not find_downloaded_protein_id(uid, data_root)]
+    pending = [uid for uid in all_ids if not find_downloaded_protein_ids(uid, data_root)]
     skipped = len(all_ids) - len(pending)
 
     if skipped:
-        log.info("Skipping %d already-downloaded proteins.", skipped)
+        log.info("Skipping %d already-downloaded UniProt IDs.", skipped)
     if not pending:
         log.info("All proteins already downloaded.")
         return

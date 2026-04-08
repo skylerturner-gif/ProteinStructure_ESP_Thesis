@@ -3,25 +3,26 @@ src/structure/af_api.py
 
 AlphaFold API client and structure downloader.
 
-Reads a .txt file of UniProt accession IDs (one per line), downloads
-the predicted structure and confidence data for each from the AlphaFold
-EBI API, converts mmCIF to PDB via gemmi, and initializes the per-protein
-metadata JSON.
+Reads a .txt file of UniProt accession IDs (one per line), queries the
+AlphaFold EBI API for all predicted structure fragments, downloads each
+fragment's mmCIF, PAE, and confidence data, converts mmCIF to PDB via
+gemmi, and initializes per-fragment metadata JSONs.
 
 API endpoint:
     GET https://alphafold.ebi.ac.uk/api/prediction/{uniprot_id}
 
-Downloads per protein:
+Downloads per fragment (e.g. F1, F2, ...):
     {protein_id}.cif       — mmCIF structure file
     {protein_id}.pdb       — PDB format (converted from mmCIF via gemmi)
     {protein_id}_pae.json  — predicted aligned error matrix (from API)
 
 Metadata fields created:
-    protein_id          — AlphaFold model ID (e.g. AF-Q16613-F1-model_v4)
+    protein_id          — AlphaFold model ID (e.g. AF-Q16613-F1)
     uniprot_id          — UniProt accession ID
+    fragment            — fragment number (1, 2, ...)
     protein_name        — protein description from AlphaFold
     organism            — source organism
-    sequence_length     — number of residues
+    sequence_length     — number of residues in this fragment
     plddt_mean          — mean per-residue pLDDT score
     plddt_median        — median per-residue pLDDT score
     plddt_per_residue   — full per-residue pLDDT array (list of floats)
@@ -50,7 +51,7 @@ from src.utils.paths import ProteinPaths
 log = get_logger(__name__)
 
 # ── AlphaFold API ─────────────────────────────────────────────────────────────
-AF_API_BASE = "https://alphafold.ebi.ac.uk/api/prediction"
+AF_API_BASE     = "https://alphafold.ebi.ac.uk/api/prediction"
 REQUEST_TIMEOUT = 30   # seconds per HTTP request
 RETRY_DELAY     = 5    # seconds to wait before retrying after a failure
 
@@ -81,15 +82,16 @@ def read_uniprot_ids(id_file: Path) -> list[str]:
 
 # ── API query ─────────────────────────────────────────────────────────────────
 
-def _fetch_api_metadata(uniprot_id: str) -> dict | None:
+def _fetch_all_fragments(uniprot_id: str) -> list[dict]:
     """
-    Query the AlphaFold API for a UniProt ID and return the F1 fragment entry.
+    Query the AlphaFold API for a UniProt ID and return all fragment entries.
 
-    The API returns a list of fragments. For proteins with multiple fragments
-    (very long sequences) we take only F1. Most proteins have a single entry.
+    For proteins with multiple fragments (very long sequences) the API returns
+    one entry per fragment (F1, F2, ...).  All fragments are returned so that
+    each can be downloaded and processed independently.
 
     Returns:
-        dict of API metadata fields for F1, or None on failure.
+        list of API metadata dicts, one per fragment, or [] on failure.
     """
     url = f"{AF_API_BASE}/{uniprot_id}"
     try:
@@ -100,26 +102,20 @@ def _fetch_api_metadata(uniprot_id: str) -> dict | None:
             log.warning("UniProt ID not found in AlphaFold DB: %s", uniprot_id)
         else:
             log.error("HTTP error for %s: %s", uniprot_id, e)
-        return None
+        return []
     except requests.exceptions.RequestException as e:
         log.error("Network error for %s: %s", uniprot_id, e)
-        return None
+        return []
 
     results = response.json()
     if not results:
         log.warning("Empty API response for %s", uniprot_id)
-        return None
-
-    # Filter for F1 fragment only
-    f1_entries = [r for r in results if r.get("modelEntityId", "").endswith("-F1")]
-    if not f1_entries:
-        log.warning("No F1 fragment found for %s — taking first result", uniprot_id)
-        return results[0]
+        return []
 
     if len(results) > 1:
-        log.info("%s has %d fragments — using F1 only", uniprot_id, len(results))
+        log.info("%s has %d fragments", uniprot_id, len(results))
 
-    return f1_entries[0]
+    return results
 
 
 # ── File downloaders ──────────────────────────────────────────────────────────
@@ -208,37 +204,37 @@ def _extract_plddt(
     return plddt_list, mean, median
 
 
-# ── Per-protein downloader ────────────────────────────────────────────────────
+# ── Per-fragment downloader ───────────────────────────────────────────────────
 
-def _download_protein(uniprot_id: str, data_root: Path) -> bool:
+def _download_fragment(api_entry: dict, data_root: Path) -> bool:
     """
-    Download all data for one protein and initialize its metadata JSON.
+    Download all data for one AlphaFold fragment and initialize its metadata JSON.
 
     Args:
-        uniprot_id: UniProt accession ID (e.g. "Q16613")
-        data_root:  root of the external data directory
+        api_entry: single fragment dict from the AlphaFold API response
+        data_root: root of the external data directory
 
     Returns:
         True on success, False on any failure (logged and skipped).
     """
-    # Step 1: Query API (we need protein_id before we can set up paths/logger)
-    api_entry = _fetch_api_metadata(uniprot_id)
-    if api_entry is None:
-        log.warning("── Skipping %s (API query failed) ──", uniprot_id)
-        return False
-
     protein_id = api_entry.get("entryId")
+    uniprot_id = api_entry.get("uniprotAccession", "")
     if not protein_id:
-        log.error("No entryId in API response for %s", uniprot_id)
+        log.error("No entryId in API entry: %s", api_entry)
         return False
 
-    # Set up per-protein paths and logger
+    # Extract fragment number from entryId (e.g. "AF-Q16613-F2" → 2)
+    try:
+        fragment = int(protein_id.rsplit("-F", 1)[1])
+    except (IndexError, ValueError):
+        fragment = 1
+
     p    = ProteinPaths(protein_id, data_root)
     p.ensure_dirs()
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
-    plog.info("── Processing %s ──", uniprot_id)
+    plog.info("── Processing %s (fragment %d) ──", uniprot_id, fragment)
 
-    # Step 2: Download mmCIF
+    # Download mmCIF
     cif_url = api_entry.get("cifUrl")
     if not cif_url:
         plog.error("No CIF URL in API response")
@@ -247,11 +243,11 @@ def _download_protein(uniprot_id: str, data_root: Path) -> bool:
     if not _download_file(cif_url, p.cif_path, plog):
         return False
 
-    # Step 3: Convert to PDB
+    # Convert to PDB
     if not _convert_cif_to_pdb(p.cif_path, p.pdb_path, plog):
         return False
 
-    # Step 4: Download PAE JSON
+    # Download PAE JSON
     pae_url   = api_entry.get("paeDocUrl")
     pae_saved = False
     if pae_url and pae_url.endswith(".json"):
@@ -259,16 +255,17 @@ def _download_protein(uniprot_id: str, data_root: Path) -> bool:
     else:
         plog.warning("No PAE JSON URL found — skipping PAE download.")
 
-    # Step 5: Extract pLDDT
+    # Extract pLDDT
     plddt_result = _extract_plddt(api_entry, plog)
     if plddt_result is None:
         plddt_list, plddt_mean, plddt_median = [], None, None
     else:
         plddt_list, plddt_mean, plddt_median = plddt_result
 
-    # Step 6: Create metadata JSON
+    # Create metadata JSON
     metadata = {
         "uniprot_id"        : uniprot_id,
+        "fragment"          : fragment,
         "protein_name"      : api_entry.get("uniprotDescription", ""),
         "organism"          : api_entry.get("organismScientificName", ""),
         "sequence_length"   : api_entry.get("sequenceEnd"),
@@ -289,49 +286,66 @@ def _download_protein(uniprot_id: str, data_root: Path) -> bool:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def find_downloaded_protein_id(uniprot_id: str, data_root: Path) -> str | None:
+def find_downloaded_protein_ids(uniprot_id: str, data_root: Path) -> list[str]:
     """
-    Search data_root for a protein directory matching a UniProt ID.
-    Returns the protein_id (directory name) if a downloaded PDB is found,
-    otherwise None.
+    Search data_root for all protein directories matching a UniProt ID.
+    Returns a list of protein_ids (directory names) for which a PDB file exists.
 
     Args:
         uniprot_id: UniProt accession ID (e.g. "Q16613")
         data_root:  root of the external data directory
 
     Returns:
-        protein_id string (e.g. "AF-Q16613-F1") or None if not found.
+        Sorted list of protein_id strings (e.g. ["AF-Q16613-F1", "AF-Q16613-F2"]).
     """
+    found = []
     for protein_dir in Path(data_root).iterdir():
         if protein_dir.is_dir() and uniprot_id in protein_dir.name:
             if (protein_dir / "structure" / f"{protein_dir.name}.pdb").exists():
-                return protein_dir.name
-    return None
+                found.append(protein_dir.name)
+    return sorted(found)
+
+
+def find_downloaded_protein_id(uniprot_id: str, data_root: Path) -> str | None:
+    """
+    Return the first downloaded protein_id for a UniProt ID, or None.
+    Convenience wrapper around find_downloaded_protein_ids for single-fragment use.
+    """
+    ids = find_downloaded_protein_ids(uniprot_id, data_root)
+    return ids[0] if ids else None
 
 
 def download_protein(uniprot_id: str, data_root: Path) -> bool:
     """
-    Download AlphaFold structure for a single UniProt ID.
+    Download AlphaFold structures for all fragments of a UniProt ID.
 
-    Queries the AlphaFold API, downloads mmCIF and PAE files, converts
-    to PDB, and initializes the per-protein metadata JSON.
+    Queries the AlphaFold API, downloads mmCIF and PAE files for every
+    available fragment (F1, F2, ...), converts each to PDB, and initializes
+    per-fragment metadata JSONs.
 
     Args:
         uniprot_id: UniProt accession ID (e.g. "Q16613")
         data_root:  root of the external data directory
 
     Returns:
-        True on success, False on failure.
+        True if at least one fragment was successfully downloaded.
     """
-    return _download_protein(uniprot_id, Path(data_root))
+    fragments = _fetch_all_fragments(uniprot_id)
+    if not fragments:
+        log.warning("── Skipping %s (API query failed or no fragments) ──", uniprot_id)
+        return False
+
+    results = [_download_fragment(entry, Path(data_root)) for entry in fragments]
+    return any(results)
+
 
 def download_structures(id_file: Path, data_root: Path) -> dict:
     """
     Download AlphaFold structures for all UniProt IDs in a text file.
 
     Reads UniProt IDs from id_file, queries the AlphaFold API for each,
-    downloads mmCIF and PAE files, converts to PDB, and initializes
-    per-protein metadata JSONs under data_root.
+    downloads all fragment mmCIF and PAE files, converts to PDB, and
+    initializes per-fragment metadata JSONs under data_root.
 
     Failed proteins are logged and skipped — the pipeline continues.
 
@@ -341,8 +355,8 @@ def download_structures(id_file: Path, data_root: Path) -> dict:
 
     Returns:
         dict with keys:
-            "success": list of protein_ids successfully processed
-            "failed":  list of uniprot_ids that failed
+            "success": list of uniprot_ids where at least one fragment succeeded
+            "failed":  list of uniprot_ids where all fragments failed
     """
     data_root = Path(data_root)
     ensure_dirs(data_root)
@@ -358,12 +372,11 @@ def download_structures(id_file: Path, data_root: Path) -> dict:
     t_total = time.perf_counter()
 
     for uniprot_id in uniprot_ids:
-        ok = _download_protein(uniprot_id, data_root)
+        ok = download_protein(uniprot_id, data_root)
         if ok:
             results["success"].append(uniprot_id)
         else:
             results["failed"].append(uniprot_id)
-        # Brief pause to be respectful to the API
         time.sleep(0.5)
 
     elapsed = time.perf_counter() - t_total

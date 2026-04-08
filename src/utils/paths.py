@@ -12,8 +12,8 @@ Directory structure per protein:
     └── <protein_id>/
         ├── structure/          .cif, .pdb, .pqr, .in, _pdb2pqr.pdb
         ├── electrostatics/     .dx, APBS output files
-        ├── mesh/               _pdb_mesh.npz, _pqr_mesh.npz, .vtk files
-        ├── esp/                _interp.npz, _laplacian.npz files
+        ├── mesh/               _pqr_mesh.npz, .vtk file
+        ├── esp/                _pqr_mesh_interp.npz, _pqr_mesh_laplacian.npz
         ├── logs/               <protein_id>.log
         └── <protein_id>_metadata.json
 
@@ -21,9 +21,8 @@ Usage:
     from src.utils.paths import ProteinPaths
     p = ProteinPaths("AF-Q16613-F1", data_root)
 
-    p.pdb_path          # structure/AF-Q16613-F1.pdb
-    p.dx_path           # electrostatics/AF-Q16613-F1.dx
-    p.pdb_mesh_path     # mesh/AF-Q16613-F1_pdb_mesh.npz
+    p.pqr_mesh_path     # mesh/AF-Q16613-F1_pqr_mesh.npz
+    p.pqr_interp_path   # esp/AF-Q16613-F1_pqr_mesh_interp.npz
     p.ensure_dirs()     # create all subdirectories
 """
 
@@ -72,15 +71,11 @@ class ProteinPaths:
         # dx_stem is passed to APBS — it appends .dx automatically
         self.dx_stem        = self.electrostatics_dir / protein_id
 
-        # ── Mesh files ────────────────────────────────────────────────────────
-        self.pdb_mesh_path  = self.mesh_dir / f"{protein_id}_pdb_mesh.npz"
+        # ── Mesh files (PQR only) ─────────────────────────────────────────────
         self.pqr_mesh_path  = self.mesh_dir / f"{protein_id}_pqr_mesh.npz"
-        self.pdb_vtk_path   = self.mesh_dir / f"{protein_id}_pdb_mesh.vtk"
         self.pqr_vtk_path   = self.mesh_dir / f"{protein_id}_pqr_mesh.vtk"
 
         # ── ESP sampled files ─────────────────────────────────────────────────
-        self.pdb_interp_path    = self.esp_dir / f"{protein_id}_pdb_mesh_interp.npz"
-        self.pdb_laplacian_path = self.esp_dir / f"{protein_id}_pdb_mesh_laplacian.npz"
         self.pqr_interp_path    = self.esp_dir / f"{protein_id}_pqr_mesh_interp.npz"
         self.pqr_laplacian_path = self.esp_dir / f"{protein_id}_pqr_mesh_laplacian.npz"
 
@@ -97,26 +92,21 @@ class ProteinPaths:
             d.mkdir(parents=True, exist_ok=True)
 
     def all_sampled_exist(self) -> bool:
-        """Return True if all four ESP sampled output files exist."""
-        return all(p.exists() for p in [
-            self.pdb_interp_path,
-            self.pdb_laplacian_path,
-            self.pqr_interp_path,
-            self.pqr_laplacian_path,
-        ])
+        """Return True if both PQR ESP sampled output files exist."""
+        return self.pqr_interp_path.exists() and self.pqr_laplacian_path.exists()
 
     def is_evaluated(self) -> bool:
         """
         Return True if ESP evaluation metrics have been written to metadata.
-        Checks for pearson_r_pdb and pearson_r_pqr keys in the metadata JSON.
-        Returns False if metadata does not exist or is missing either key.
+        Checks for pearson_r_pqr key in the metadata JSON.
+        Returns False if metadata does not exist or is missing the key.
         """
         if not self.metadata_path.exists():
             return False
         try:
             import json
             meta = json.loads(self.metadata_path.read_text())
-            return "pearson_r_pdb" in meta and "pearson_r_pqr" in meta
+            return "pearson_r_pqr" in meta
         except Exception:
             return False
 

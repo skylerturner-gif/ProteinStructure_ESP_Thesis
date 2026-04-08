@@ -1,7 +1,7 @@
 """
 scripts/03_generate_surface.py
 
-Generate SES mesh surfaces for a filtered set of proteins.
+Generate PQR SES mesh surfaces for a filtered set of proteins.
 
 Usage:
     python scripts/03_generate_surface.py --all
@@ -21,7 +21,7 @@ from src.utils.paths import ProteinPaths
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate SES mesh surfaces for a filtered set of proteins."
+        description="Generate PQR SES mesh surfaces for a filtered set of proteins."
     )
     parser.add_argument("--data-root", type=Path, default=None)
     add_filter_args(parser)
@@ -38,44 +38,24 @@ def main():
     log.info("Surface generation for %d proteins", len(protein_ids))
 
     for protein_id in protein_ids:
-        p           = ProteinPaths(protein_id, data_root)
-        protein_ok  = True
-        failed_step = ""
+        p = ProteinPaths(protein_id, data_root)
 
-        # PDB mesh
-        if p.pdb_mesh_path.exists():
-            log.info("[%s] PDB mesh exists — skipping", protein_id)
-        elif not p.pdb_path.exists():
-            log.error("[%s] PDB missing — skipping PDB mesh", protein_id)
-            protein_ok  = False
-            failed_step = "pdb missing"
-        else:
-            try:
-                build_mesh(p.pdb_path, protein_id, data_root)
-            except Exception as e:
-                log.error("[%s] PDB mesh failed: %s", protein_id, e)
-                protein_ok  = False
-                failed_step = "pdb mesh"
-
-        # PQR mesh
         if p.pqr_mesh_path.exists():
             log.info("[%s] PQR mesh exists — skipping", protein_id)
-        elif not p.pqr_path.exists():
-            log.error("[%s] PQR missing — skipping PQR mesh", protein_id)
-            protein_ok  = False
-            failed_step = failed_step or "pqr missing"
-        else:
-            try:
-                build_mesh(p.pqr_path, protein_id, data_root)
-            except Exception as e:
-                log.error("[%s] PQR mesh failed: %s", protein_id, e)
-                protein_ok  = False
-                failed_step = failed_step or "pqr mesh"
+            notify(protein_id, "skipped", "surface generation")
+            continue
 
-        if protein_ok:
+        if not p.pqr_path.exists():
+            log.error("[%s] PQR missing — cannot build mesh", protein_id)
+            notify(protein_id, "failed", "pqr missing")
+            continue
+
+        try:
+            build_mesh(p.pqr_path, protein_id, data_root)
             notify(protein_id, "complete", "surface generation")
-        else:
-            notify(protein_id, "failed", failed_step)
+        except Exception as e:
+            log.error("[%s] PQR mesh failed: %s", protein_id, e)
+            notify(protein_id, "failed", "pqr mesh")
 
 
 if __name__ == "__main__":
