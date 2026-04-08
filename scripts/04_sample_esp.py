@@ -1,7 +1,7 @@
 """
 scripts/04_sample_esp.py
 
-Sample ESP values onto surface meshes for a filtered set of proteins.
+Sample ESP values onto PQR surface meshes for a filtered set of proteins.
 
 Usage:
     python scripts/04_sample_esp.py --all
@@ -21,7 +21,7 @@ from src.utils.paths import ProteinPaths
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sample ESP onto surface meshes for a filtered set of proteins."
+        description="Sample ESP onto PQR surface meshes for a filtered set of proteins."
     )
     parser.add_argument("--data-root", type=Path, default=None)
     add_filter_args(parser)
@@ -45,8 +45,7 @@ def main():
             notify(protein_id, "skipped", "esp sampling")
             continue
 
-        missing = [f for f in [p.pdb_mesh_path, p.pqr_mesh_path, p.dx_path]
-                   if not f.exists()]
+        missing = [f for f in [p.pqr_mesh_path, p.dx_path] if not f.exists()]
         if missing:
             for f in missing:
                 log.error("[%s] Missing: %s", protein_id, f.name)

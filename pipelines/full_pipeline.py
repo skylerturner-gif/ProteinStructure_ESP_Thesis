@@ -3,12 +3,12 @@ pipeline/full_pipeline.py
 
 Full end-to-end pipeline for the ProteinStructure ESP project.
 
-Runs all pipeline steps sequentially for each selected protein:
-    1. Download AlphaFold structure (mmCIF → PDB, PAE, metadata)
+Runs all pipeline steps sequentially for each selected protein fragment:
+    1. Download AlphaFold structures (all fragments per UniProt ID)
     2. Run PDB2PQR (charge/radius assignment)
     3. Run APBS (electrostatic potential calculation)
-    4. Generate surface meshes (PDB and PQR variants via MSMS)
-    5. Sample ESP onto surface meshes (interpolated + Laplacian)
+    4. Generate PQR surface mesh via MSMS
+    5. Sample ESP onto the PQR mesh (interpolated + Laplacian)
     6. Evaluate predictions (Pearson r, RMSE → metadata)
 
 Each step is skipped if its output files already exist.
@@ -27,7 +27,7 @@ from pathlib import Path
 from src.analysis.metrics import evaluate_protein
 from src.electrostatics.run_apbs import process_apbs
 from src.electrostatics.run_pdb2pqr import process_pdb2pqr
-from src.structure.af_api import download_protein, find_downloaded_protein_id, read_uniprot_ids
+from src.structure.af_api import download_protein, find_downloaded_protein_ids, read_uniprot_ids
 from src.surface.esp_mapping import sample_esp
 from src.surface.mesh import build_mesh
 from src.utils.config import get_config, get_data_root
@@ -40,12 +40,12 @@ from src.utils.paths import ProteinPaths
 
 def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
     """
-    Run all pipeline steps for a single protein.
+    Run all pipeline steps for a single protein fragment.
     All detailed logging goes to the per-protein log file.
     Returns a dict mapping step name to 'success', 'skipped', or 'failed'.
     """
     p    = ProteinPaths(protein_id, data_root)
-    plog = pipeline_log  # steps use pipeline log for high-level; modules use per-protein log
+    plog = pipeline_log
 
     step_results = {}
 
@@ -71,30 +71,25 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
             ok = process_apbs(protein_id, data_root)
             step_results["apbs"] = "success" if ok else "failed"
 
-        # ── Step 4: Mesh generation ───────────────────────────────────────────
-        for struct_path, mesh_out, label in [
-            (p.pdb_path, p.pdb_mesh_path, "pdb"),
-            (p.pqr_path, p.pqr_mesh_path, "pqr"),
-        ]:
-            step_key = f"mesh_{label}"
-            if mesh_out.exists():
-                step_results[step_key] = "skipped"
-            elif not struct_path.exists():
-                plog.error("[%s] Step 4: %s missing", protein_id, label.upper())
-                step_results[step_key] = "failed"
-            else:
-                try:
-                    build_mesh(struct_path, protein_id, data_root)
-                    step_results[step_key] = "success"
-                except Exception as e:
-                    plog.error("[%s] Step 4 %s mesh failed: %s", protein_id, label, e)
-                    step_results[step_key] = "failed"
+        # ── Step 4: PQR mesh generation ───────────────────────────────────────
+        if p.pqr_mesh_path.exists():
+            step_results["mesh_pqr"] = "skipped"
+        elif not p.pqr_path.exists():
+            plog.error("[%s] Step 4: PQR missing", protein_id)
+            step_results["mesh_pqr"] = "failed"
+        else:
+            try:
+                build_mesh(p.pqr_path, protein_id, data_root)
+                step_results["mesh_pqr"] = "success"
+            except Exception as e:
+                plog.error("[%s] Step 4 PQR mesh failed: %s", protein_id, e)
+                step_results["mesh_pqr"] = "failed"
 
         # ── Step 5: ESP sampling ──────────────────────────────────────────────
         if p.all_sampled_exist():
             step_results["esp_sampling"] = "skipped"
-        elif not p.pdb_mesh_path.exists() or not p.pqr_mesh_path.exists() or not p.dx_path.exists():
-            plog.error("[%s] Step 5: missing mesh or DX", protein_id)
+        elif not p.pqr_mesh_path.exists() or not p.dx_path.exists():
+            plog.error("[%s] Step 5: missing PQR mesh or DX", protein_id)
             step_results["esp_sampling"] = "failed"
         else:
             ok = sample_esp(protein_id, data_root)
@@ -114,13 +109,13 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
                 plog.error("[%s] Step 6 failed: %s", protein_id, e)
                 step_results["evaluate"] = "failed"
 
-    # Write total time to metadata
     try:
         update_metadata(protein_id, data_root=data_root, data={
             "time_total_sec": t_total.rounded,
         })
     except Exception:
-        pass  # don't let a metadata write failure mask pipeline results
+        pass
+
     any_failed   = any(v == "failed" for v in step_results.values())
     status       = "failed" if any_failed else "complete"
     failed_steps = [k for k, v in step_results.items() if v == "failed"]
@@ -135,7 +130,7 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _log_summary(all_results: dict, log) -> None:
-    steps = ["pdb2pqr", "apbs", "mesh_pdb", "mesh_pqr", "esp_sampling", "evaluate"]
+    steps = ["pdb2pqr", "apbs", "mesh_pqr", "esp_sampling", "evaluate"]
     log.info("═" * 70)
     log.info("PIPELINE SUMMARY")
     log.info("═" * 70)
@@ -172,41 +167,41 @@ def main():
         log.warning("No UniProt IDs found in %s", args.id_file)
         return
 
-    log.info("Starting pipeline for %d proteins", len(uniprot_ids))
+    log.info("Starting pipeline for %d UniProt IDs", len(uniprot_ids))
     all_results = {}
 
     with timer() as t_run:
         for uniprot_id in uniprot_ids:
 
-            # ── Step 1: Download ──────────────────────────────────────────────
-            protein_id = find_downloaded_protein_id(uniprot_id, data_root)
-            if protein_id:
-                log.info("[%s] Already downloaded as %s — skipping",
-                         uniprot_id, protein_id)
+            # ── Step 1: Download all fragments ────────────────────────────────
+            protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
+            if protein_ids:
+                log.info("[%s] Already downloaded: %s — skipping download",
+                         uniprot_id, ", ".join(protein_ids))
             else:
                 ok = download_protein(uniprot_id, data_root)
                 if not ok:
                     notify(uniprot_id, "failed", "download")
                     log.error("[%s] Download failed — skipping all steps", uniprot_id)
                     continue
-                # Resolve the protein_id assigned by the API
-                protein_id = find_downloaded_protein_id(uniprot_id, data_root)
-                if not protein_id:
-                    log.error("[%s] Could not resolve protein_id after download", uniprot_id)
+                protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
+                if not protein_ids:
+                    log.error("[%s] Could not resolve any protein_id after download", uniprot_id)
                     notify(uniprot_id, "failed", "protein_id resolution")
                     continue
-                notify(uniprot_id, "complete", "download")
+                notify(uniprot_id, "complete", f"download ({len(protein_ids)} fragments)")
 
-            # ── Steps 2-6: Full per-protein pipeline ──────────────────────────
-            step_results = _run_protein(protein_id, data_root, log)
-            all_results[protein_id] = step_results
-            try:
-                update_metadata(protein_id, data_root=data_root, data={
-                    "pipeline_steps"    : step_results,
-                    "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
-                })
-            except Exception:
-                pass  # don't let a metadata write failure mask pipeline results
+            # ── Steps 2-6: Run pipeline for each fragment ─────────────────────
+            for protein_id in protein_ids:
+                step_results = _run_protein(protein_id, data_root, log)
+                all_results[protein_id] = step_results
+                try:
+                    update_metadata(protein_id, data_root=data_root, data={
+                        "pipeline_steps"    : step_results,
+                        "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
+                    })
+                except Exception:
+                    pass
 
     _log_summary(all_results, log)
     log.info("Total pipeline time: %.1f s", t_run.seconds)
