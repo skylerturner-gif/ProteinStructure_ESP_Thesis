@@ -79,6 +79,13 @@ class ProteinPaths:
         self.pqr_interp_path    = self.esp_dir / f"{protein_id}_pqr_mesh_interp.npz"
         self.pqr_laplacian_path = self.esp_dir / f"{protein_id}_pqr_mesh_laplacian.npz"
 
+        # ── Graph cache files ─────────────────────────────────────────────────
+        self.graph_dir = self.protein_dir / "graph"
+
+    def graph_path(self, variant: str = "interp") -> Path:
+        """Path to the cached PyG HeteroData graph for the given ESP variant."""
+        return self.graph_dir / f"{self.protein_id}_graph_{variant}.pt"
+
     def ensure_dirs(self) -> None:
         """Create all protein subdirectories. Safe to call if they exist."""
         for d in [
@@ -88,6 +95,7 @@ class ProteinPaths:
             self.mesh_dir,
             self.esp_dir,
             self.logs_dir,
+            self.graph_dir,
         ]:
             d.mkdir(parents=True, exist_ok=True)
 

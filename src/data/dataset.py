@@ -1,1 +1,6 @@
-# This is the data handling code. It will take the processed data and build the dataloaders and tensors and splits
+"""
+src/data/dataset.py
+
+Dataset with disk caching and train/val/test splitting for protein ESP graphs.
+
+"""
