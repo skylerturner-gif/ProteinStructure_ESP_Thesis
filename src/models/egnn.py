@@ -11,7 +11,7 @@ Exports
   _mlp(dims)              — MLP factory
   AtomEncoder             — discrete atom attributes → hidden_dim vector
   MessageLayer            — one MP step (same-type or bipartite edges)
-  _AtomMP                 — Stage 1: cov → supp passes on atom nodes
+  _AtomMP                 — Stage 1: bond → radial passes on atom nodes
   _QueryRefine            — Stage 3: QQ passes on query nodes
   N_ELEMENT_TYPES         — vocabulary size for atom type embedding
   N_RESIDUE_TYPES         — vocabulary size for residue type embedding
@@ -86,7 +86,7 @@ class MessageLayer(nn.Module):
     """
     One message-passing step for a single edge type.
 
-    Handles both same-type edges (cov, supp, qq) and bipartite edges (aq).
+    Handles both same-type edges (bond, radial, qq) and bipartite edges (aq).
 
     Message  : MLP(cat(h_src, h_dst, edge_attr))  →  hidden_dim
     Aggregate: mean over source neighbors per destination node
@@ -119,7 +119,7 @@ class MessageLayer(nn.Module):
 # ── Stage modules ─────────────────────────────────────────────────────────────
 
 class _AtomMP(nn.Module):
-    """Stage 1: interleaved cov → supp passes, repeated n_rounds times."""
+    """Stage 1: interleaved bond → radial passes, repeated n_rounds times."""
 
     def __init__(self, hidden_dim: int, n_rbf: int, n_rounds: int) -> None:
         super().__init__()
@@ -131,12 +131,12 @@ class _AtomMP(nn.Module):
         )
 
     def forward(self, h_atom: Tensor, data: HeteroData) -> Tensor:
-        cov  = data["atom", "cov",  "atom"]
-        supp = data["atom", "supp", "atom"]
+        bond  = data["atom", "bond",  "atom"]
+        radial = data["atom", "radial", "atom"]
         n    = h_atom.shape[0]
         for cov_l, supp_l in zip(self.cov_layers, self.supp_layers):
-            h_atom = cov_l( h_atom, h_atom, cov.edge_index,  cov.edge_attr,  n)
-            h_atom = supp_l(h_atom, h_atom, supp.edge_index, supp.edge_attr, n)
+            h_atom = cov_l( h_atom, h_atom, bond.edge_index,  bond.edge_attr,  n)
+            h_atom = supp_l(h_atom, h_atom, radial.edge_index, radial.edge_attr, n)
         return h_atom
 
 

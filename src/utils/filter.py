@@ -12,8 +12,8 @@ Supported filters:
     max_sequence_length  — maximum sequence length (inclusive)
     min_plddt            — minimum mean pLDDT score (inclusive)
     max_plddt            — maximum mean pLDDT score (inclusive)
-    min_surface_area     — minimum SES area in Å² (inclusive, uses pdb mesh)
-    max_surface_area     — maximum SES area in Å² (inclusive, uses pdb mesh)
+    min_surface_area     — minimum SES area in Å² (inclusive, uses pqr mesh)
+    max_surface_area     — maximum SES area in Å² (inclusive, uses pqr mesh)
 
 All filters are optional and combinable. Passing no filters with
 select_all=True returns all proteins with valid metadata.

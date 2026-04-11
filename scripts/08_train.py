@@ -80,7 +80,7 @@ def main() -> None:
     parser.add_argument("--n-rbf",             type=int,   default=16)
     parser.add_argument("--n-heads",           type=int,   default=4,
                         help="Attention heads (attention model only).")
-    parser.add_argument("--n-cov-supp-rounds", type=int,   default=2)
+    parser.add_argument("--n-bond-radial-rounds", type=int,   default=2)
     parser.add_argument("--n-aq-rounds",       type=int,   default=3)
     parser.add_argument("--n-qq-rounds",       type=int,   default=2)
 

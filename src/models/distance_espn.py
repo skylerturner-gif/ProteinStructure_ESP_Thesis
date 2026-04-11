@@ -7,7 +7,7 @@ All edge types use mean-aggregation message passing. Geometry is encoded
 purely via Gaussian RBF features on each edge — no attention, no coordinate
 updates.
 
-  Stage 1 — Atom encoder    : cov → supp,  2 rounds
+  Stage 1 — Atom encoder    : bond → radial,  2 rounds
   Stage 2 — Query encoder   : AQ,           3 rounds  (mean aggregation)
   Stage 3 — Query refinement: QQ,           2 rounds
 
