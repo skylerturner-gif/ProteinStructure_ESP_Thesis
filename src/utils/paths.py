@@ -13,7 +13,7 @@ Directory structure per protein:
         ├── structure/          .cif, .pdb, .pqr, .in, _pdb2pqr.pdb
         ├── electrostatics/     .dx, APBS output files
         ├── mesh/               _pqr_mesh.npz, .vtk file
-        ├── esp/                _pqr_mesh_interp.npz, _pqr_mesh_laplacian.npz
+        ├── esp/                _pqr_mesh_interp.npz
         ├── logs/               <protein_id>.log
         └── <protein_id>_metadata.json
 
@@ -76,8 +76,7 @@ class ProteinPaths:
         self.pqr_vtk_path   = self.mesh_dir / f"{protein_id}_pqr_mesh.vtk"
 
         # ── ESP sampled files ─────────────────────────────────────────────────
-        self.pqr_interp_path    = self.esp_dir / f"{protein_id}_pqr_mesh_interp.npz"
-        self.pqr_laplacian_path = self.esp_dir / f"{protein_id}_pqr_mesh_laplacian.npz"
+        self.pqr_interp_path = self.esp_dir / f"{protein_id}_pqr_mesh_interp.npz"
 
         # ── Graph cache files ─────────────────────────────────────────────────
         self.graph_dir = self.protein_dir / "graph"
@@ -100,8 +99,8 @@ class ProteinPaths:
             d.mkdir(parents=True, exist_ok=True)
 
     def all_sampled_exist(self) -> bool:
-        """Return True if both PQR ESP sampled output files exist."""
-        return self.pqr_interp_path.exists() and self.pqr_laplacian_path.exists()
+        """Return True if the PQR ESP sampled output file exists."""
+        return self.pqr_interp_path.exists()
 
     def is_evaluated(self) -> bool:
         """

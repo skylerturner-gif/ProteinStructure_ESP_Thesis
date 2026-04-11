@@ -33,8 +33,6 @@ surface:
 
 esp_mapping:
   normal_offset: 0.5       # Å — outward normal offset before ESP lookup
-  sample_frac: 0.05        # fraction of vertices used as known points for Laplacian
-                           # e.g. 0.05 → 5% of vertices are constrained
 
 logging:
   level: INFO              # DEBUG, INFO, WARNING, ERROR

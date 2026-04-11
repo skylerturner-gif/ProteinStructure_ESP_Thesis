@@ -4,6 +4,7 @@ config.yaml
 # ── External data (too large for GitHub) ─────────────────────────────────────
 # All generated protein data lives outside the repo in data_root (see config.yaml)
 # If you have a local data/ folder with large files, add patterns here:
+data/raw/
 data/pqr/
 data/apbs/
 data/esp/
