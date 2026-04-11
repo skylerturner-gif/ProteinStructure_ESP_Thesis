@@ -28,6 +28,7 @@ import torch
 from torch_geometric.loader import DataLoader
 
 from src.data.dataset import ProteinGraphDataset, split_dataset
+from src.data.sampler import DynamicBatchSampler
 from src.data.transform import NormalizeESP, compute_esp_stats
 from src.models.attention_espn import AttentionESPN
 from src.models.distance_espn import DistanceESPN
@@ -40,11 +41,11 @@ from src.utils.helpers import get_pipeline_logger
 
 def build_model(args, device: torch.device):
     common = dict(
-        hidden_dim        = args.hidden_dim,
-        n_rbf             = args.n_rbf,
-        n_cov_supp_rounds = args.n_cov_supp_rounds,
-        n_aq_rounds       = args.n_aq_rounds,
-        n_qq_rounds       = args.n_qq_rounds,
+        hidden_dim           = args.hidden_dim,
+        n_rbf                = args.n_rbf,
+        n_bond_radial_rounds = args.n_bond_radial_rounds,
+        n_aq_rounds          = args.n_aq_rounds,
+        n_qq_rounds          = args.n_qq_rounds,
     )
     if args.model == "distance":
         model = DistanceESPN(**common)
@@ -91,8 +92,9 @@ def main() -> None:
                         help="Ignore cached graphs and rebuild from scratch.")
 
     # ── Training ──────────────────────────────────────────────────────────────
-    parser.add_argument("--epochs",         type=int,   default=100)
-    parser.add_argument("--batch-size",     type=int,   default=4)
+    parser.add_argument("--epochs",             type=int,   default=100)
+    parser.add_argument("--max-edges-per-batch", type=int,  default=200_000,
+                        help="Edge budget per batch for DynamicBatchSampler.")
     parser.add_argument("--lr",             type=float, default=3e-4)
     parser.add_argument("--weight-decay",   type=float, default=1e-4)
     parser.add_argument("--pearson-weight", type=float, default=0.1,
@@ -166,12 +168,27 @@ def main() -> None:
     test_ds.transform  = norm
 
     # ── DataLoaders ───────────────────────────────────────────────────────────
-    loader_kwargs = dict(
-        batch_size  = args.batch_size,
-        num_workers = args.num_workers,
+    print("Building dynamic batch samplers (reads edge counts from metadata)...")
+    train_sampler = DynamicBatchSampler(
+        train_ds, args.max_edges_per_batch,
+        shuffle=True, drop_last=True,
     )
-    train_loader = DataLoader(train_ds, shuffle=True,  **loader_kwargs)
-    val_loader   = DataLoader(val_ds,   shuffle=False, **loader_kwargs)
+    val_sampler = DynamicBatchSampler(
+        val_ds, args.max_edges_per_batch,
+        shuffle=False, drop_last=False,
+    )
+    print(
+        f"  ~{len(train_sampler)} train batches  |  "
+        f"~{len(val_sampler)} val batches  "
+        f"(budget: {args.max_edges_per_batch:,} edges/batch)"
+    )
+
+    train_loader = DataLoader(
+        train_ds, batch_sampler=train_sampler, num_workers=args.num_workers,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_sampler=val_sampler, num_workers=args.num_workers,
+    )
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = build_model(args, device)
@@ -207,12 +224,12 @@ def main() -> None:
             "esp_mean":     esp_mean,
             "esp_std":      esp_std,
             "model_config": {
-                "hidden_dim":        args.hidden_dim,
-                "n_rbf":             args.n_rbf,
-                "n_heads":           args.n_heads,
-                "n_cov_supp_rounds": args.n_cov_supp_rounds,
-                "n_aq_rounds":       args.n_aq_rounds,
-                "n_qq_rounds":       args.n_qq_rounds,
+                "hidden_dim":           args.hidden_dim,
+                "n_rbf":                args.n_rbf,
+                "n_heads":              args.n_heads,
+                "n_bond_radial_rounds": args.n_bond_radial_rounds,
+                "n_aq_rounds":          args.n_aq_rounds,
+                "n_qq_rounds":          args.n_qq_rounds,
             },
         },
     )
