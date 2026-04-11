@@ -1,19 +1,19 @@
 """
-scripts/07_train.py
+scripts/08_train.py
 
 Train DistanceESPN or AttentionESPN on ESP surface graphs.
 
 Usage
 -----
     # Train on all proteins, distance model
-    python scripts/07_train.py --model distance --all
+    python scripts/08_train.py --model distance --all
 
     # Train on filtered proteins, attention model, resume from checkpoint
-    python scripts/07_train.py --model attention --filter --min-plddt 70 \\
+    python scripts/08_train.py --model attention --filter --min-plddt 70 \\
         --epochs 150 --batch-size 4 --resume checkpoints/run_01/latest_model.pt
 
     # Override architecture defaults
-    python scripts/07_train.py --model attention --all \\
+    python scripts/08_train.py --model attention --all \\
         --hidden-dim 256 --n-heads 8 --n-aq-rounds 4
 
 Checkpoints are saved to <checkpoint-dir>/<model>_<variant>/ and contain
