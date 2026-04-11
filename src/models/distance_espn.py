@@ -39,7 +39,7 @@ class DistanceESPN(nn.Module):
     Args:
         hidden_dim:        node feature dimensionality (default 128)
         n_rbf:             RBF basis functions per edge (default 16)
-        n_cov_supp_rounds: Stage 1 rounds (default 2)
+        n_bond_radial_rounds: Stage 1 rounds (default 2)
         n_aq_rounds:       Stage 2 rounds (default 3)
         n_qq_rounds:       Stage 3 rounds (default 2)
     """
@@ -48,18 +48,17 @@ class DistanceESPN(nn.Module):
         self,
         hidden_dim: int = 128,
         n_rbf:      int = 16,
-        n_cov_supp_rounds: int = 2,
+        n_bond_radial_rounds: int = 2,
         n_aq_rounds:       int = 3,
         n_qq_rounds:       int = 2,
     ) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
 
+        self.n_aq_rounds  = n_aq_rounds
         self.atom_encoder = AtomEncoder(hidden_dim)
-        self.atom_mp      = _AtomMP(hidden_dim, n_rbf, n_cov_supp_rounds)
-        self.aq_layers    = nn.ModuleList(
-            [MessageLayer(hidden_dim, n_rbf) for _ in range(n_aq_rounds)]
-        )
+        self.atom_mp      = _AtomMP(hidden_dim, n_rbf, n_bond_radial_rounds)
+        self.aq_layer     = MessageLayer(hidden_dim, n_rbf)
         self.query_refine = _QueryRefine(hidden_dim, n_rbf, n_qq_rounds)
         self.output_head  = _mlp([hidden_dim, hidden_dim // 2, 1])
 
@@ -68,12 +67,12 @@ class DistanceESPN(nn.Module):
         h_atom = self.atom_encoder(data)
         h_atom = self.atom_mp(h_atom, data)
 
-        # Stage 2 — atom→query (mean aggregation)
+        # Stage 2 — atom→query (mean aggregation, shared weights)
         n_query = data["query"].pos.shape[0]
         h_query = torch.zeros(n_query, self.hidden_dim, device=h_atom.device)
         aq      = data["atom", "aq", "query"]
-        for aq_l in self.aq_layers:
-            h_query = aq_l(h_atom, h_query, aq.edge_index, aq.edge_attr, n_query)
+        for _ in range(self.n_aq_rounds):
+            h_query = self.aq_layer(h_atom, h_query, aq.edge_index, aq.edge_attr, n_query)
 
         # Stage 3 — query refinement
         h_query = self.query_refine(h_query, data)

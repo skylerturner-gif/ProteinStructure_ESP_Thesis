@@ -119,39 +119,41 @@ class MessageLayer(nn.Module):
 # ── Stage modules ─────────────────────────────────────────────────────────────
 
 class _AtomMP(nn.Module):
-    """Stage 1: interleaved bond → radial passes, repeated n_rounds times."""
+    """
+    Stage 1: interleaved bond → radial passes, repeated n_rounds times.
+    Weights are shared across rounds (one layer instance per edge type).
+    """
 
     def __init__(self, hidden_dim: int, n_rbf: int, n_rounds: int) -> None:
         super().__init__()
-        self.cov_layers  = nn.ModuleList(
-            [MessageLayer(hidden_dim, n_rbf + 1) for _ in range(n_rounds)]
-        )
-        self.supp_layers = nn.ModuleList(
-            [MessageLayer(hidden_dim, n_rbf) for _ in range(n_rounds)]
-        )
+        self.n_rounds   = n_rounds
+        self.bond_layer  = MessageLayer(hidden_dim, n_rbf + 1)
+        self.radial_layer = MessageLayer(hidden_dim, n_rbf)
 
     def forward(self, h_atom: Tensor, data: HeteroData) -> Tensor:
-        bond  = data["atom", "bond",  "atom"]
+        bond   = data["atom", "bond",   "atom"]
         radial = data["atom", "radial", "atom"]
-        n    = h_atom.shape[0]
-        for cov_l, supp_l in zip(self.cov_layers, self.supp_layers):
-            h_atom = cov_l( h_atom, h_atom, bond.edge_index,  bond.edge_attr,  n)
-            h_atom = supp_l(h_atom, h_atom, radial.edge_index, radial.edge_attr, n)
+        n      = h_atom.shape[0]
+        for _ in range(self.n_rounds):
+            h_atom = self.bond_layer( h_atom, h_atom, bond.edge_index,   bond.edge_attr,   n)
+            h_atom = self.radial_layer(h_atom, h_atom, radial.edge_index, radial.edge_attr, n)
         return h_atom
 
 
 class _QueryRefine(nn.Module):
-    """Stage 3: QQ passes repeated n_rounds times."""
+    """
+    Stage 3: QQ passes repeated n_rounds times.
+    Weights are shared across rounds (one layer instance).
+    """
 
     def __init__(self, hidden_dim: int, n_rbf: int, n_rounds: int) -> None:
         super().__init__()
-        self.qq_layers = nn.ModuleList(
-            [MessageLayer(hidden_dim, n_rbf) for _ in range(n_rounds)]
-        )
+        self.n_rounds = n_rounds
+        self.qq_layer = MessageLayer(hidden_dim, n_rbf)
 
     def forward(self, h_query: Tensor, data: HeteroData) -> Tensor:
         qq = data["query", "qq", "query"]
         n  = h_query.shape[0]
-        for qq_l in self.qq_layers:
-            h_query = qq_l(h_query, h_query, qq.edge_index, qq.edge_attr, n)
+        for _ in range(self.n_rounds):
+            h_query = self.qq_layer(h_query, h_query, qq.edge_index, qq.edge_attr, n)
         return h_query

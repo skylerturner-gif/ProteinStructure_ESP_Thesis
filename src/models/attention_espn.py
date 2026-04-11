@@ -115,11 +115,10 @@ class AttentionESPN(nn.Module):
         super().__init__()
         self.hidden_dim = hidden_dim
 
+        self.n_aq_rounds  = n_aq_rounds
         self.atom_encoder = AtomEncoder(hidden_dim)
         self.atom_mp      = _AtomMP(hidden_dim, n_rbf, n_cov_supp_rounds)
-        self.aq_layers    = nn.ModuleList(
-            [AQAttentionLayer(hidden_dim, n_rbf, n_heads) for _ in range(n_aq_rounds)]
-        )
+        self.aq_layer     = AQAttentionLayer(hidden_dim, n_rbf, n_heads)
         self.query_refine = _QueryRefine(hidden_dim, n_rbf, n_qq_rounds)
         self.output_head  = _mlp([hidden_dim, hidden_dim // 2, 1])
 
@@ -128,12 +127,12 @@ class AttentionESPN(nn.Module):
         h_atom = self.atom_encoder(data)
         h_atom = self.atom_mp(h_atom, data)
 
-        # Stage 2 — atom→query (cross-attention)
+        # Stage 2 — atom→query (cross-attention, shared weights)
         n_query = data["query"].pos.shape[0]
         h_query = torch.zeros(n_query, self.hidden_dim, device=h_atom.device)
         aq      = data["atom", "aq", "query"]
-        for aq_l in self.aq_layers:
-            h_query = aq_l(h_atom, h_query, aq.edge_index, aq.edge_attr, n_query)
+        for _ in range(self.n_aq_rounds):
+            h_query = self.aq_layer(h_atom, h_query, aq.edge_index, aq.edge_attr, n_query)
 
         # Stage 3 — query refinement
         h_query = self.query_refine(h_query, data)
