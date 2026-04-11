@@ -7,7 +7,7 @@ Identical to DistanceESPN for Stages 1 and 3. Stage 2 replaces mean
 aggregation with multi-head cross-attention: each query node attends over
 its knn_aq atom neighbors, with a per-head RBF geometry bias.
 
-  Stage 1 — Atom encoder    : cov → supp,  2 rounds
+  Stage 1 — Atom encoder    : bond → radial,  2 rounds
   Stage 2 — Query encoder   : AQ,           3 rounds  (cross-attention)
   Stage 3 — Query refinement: QQ,           2 rounds
 
