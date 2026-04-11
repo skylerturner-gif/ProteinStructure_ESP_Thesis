@@ -163,6 +163,11 @@ class Trainer:
         print("-" * 65)
 
         for epoch in range(1, n_epochs + 1):
+            # Let samplers (DynamicBatchSampler, DistributedSampler, etc.)
+            # update their internal epoch counter for a fresh shuffle.
+            if hasattr(train_loader.batch_sampler, "set_epoch"):
+                train_loader.batch_sampler.set_epoch(epoch)
+
             t0          = time.perf_counter()
             train_m     = self.train_epoch(train_loader)
             val_m       = self.val_epoch(val_loader)
