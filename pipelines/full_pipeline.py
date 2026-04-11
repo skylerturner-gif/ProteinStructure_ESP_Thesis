@@ -33,6 +33,7 @@ from src.surface.mesh import build_mesh
 from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger, notify, timer
 from src.utils.io import update_metadata
+from src.utils.parallel import run_parallel
 from src.utils.paths import ProteinPaths
 
 
@@ -127,6 +128,25 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
     return step_results
 
 
+def _run_protein_worker(protein_id: str, data_root_str: str) -> tuple[str, dict]:
+    """
+    Process-pool-safe wrapper around _run_protein.
+
+    Takes only picklable primitive arguments and creates its own logger
+    so it can be submitted to ProcessPoolExecutor via run_parallel.
+
+    Returns (protein_id, step_results).
+    """
+    from pathlib import Path
+    from src.utils.config import get_config
+    from src.utils.helpers import get_pipeline_logger
+
+    data_root = Path(data_root_str)
+    log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
+    steps     = _run_protein(protein_id, data_root, log)
+    return protein_id, steps
+
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _log_summary(all_results: dict, log) -> None:
@@ -153,6 +173,11 @@ def main():
     )
     parser.add_argument("--id-file", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Number of parallel worker processes for the per-protein pipeline "
+             "(default: 1). Set >1 to process multiple proteins concurrently.",
+    )
     args = parser.parse_args()
 
     data_root = args.data_root or get_data_root()
@@ -192,16 +217,38 @@ def main():
                 notify(uniprot_id, "complete", f"download ({len(protein_ids)} fragments)")
 
             # ── Steps 2-6: Run pipeline for each fragment ─────────────────────
-            for protein_id in protein_ids:
-                step_results = _run_protein(protein_id, data_root, log)
-                all_results[protein_id] = step_results
-                try:
-                    update_metadata(protein_id, data_root=data_root, data={
-                        "pipeline_steps"    : step_results,
-                        "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
-                    })
-                except Exception:
-                    pass
+            if args.workers == 1:
+                for protein_id in protein_ids:
+                    step_results = _run_protein(protein_id, data_root, log)
+                    all_results[protein_id] = step_results
+                    try:
+                        update_metadata(protein_id, data_root=data_root, data={
+                            "pipeline_steps"    : step_results,
+                            "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
+                        })
+                    except Exception:
+                        pass
+            else:
+                parallel_results = run_parallel(
+                    _run_protein_worker,
+                    [(pid, str(data_root)) for pid in protein_ids],
+                    n_workers=args.workers,
+                    label=f"proteins (workers={args.workers})",
+                )
+                for protein_id, outcome in parallel_results:
+                    if isinstance(outcome, Exception):
+                        log.error("[%s] Worker exception: %s", protein_id, outcome)
+                        all_results[protein_id] = {}
+                        continue
+                    _, step_results = outcome
+                    all_results[protein_id] = step_results
+                    try:
+                        update_metadata(protein_id, data_root=data_root, data={
+                            "pipeline_steps"    : step_results,
+                            "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
+                        })
+                    except Exception:
+                        pass
 
     _log_summary(all_results, log)
     log.info("Total pipeline time: %.1f s", t_run.seconds)

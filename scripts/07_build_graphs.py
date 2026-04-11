@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
@@ -27,6 +28,7 @@ from src.utils.config import get_config, get_data_root
 from src.utils.filter import add_filter_args, get_protein_ids_from_args
 from src.utils.helpers import get_pipeline_logger, notify, timer
 from src.utils.io import update_metadata
+from src.utils.parallel import run_parallel
 from src.utils.paths import ProteinPaths
 
 
@@ -86,6 +88,25 @@ def _build_one(
         return "fail"
 
 
+def _build_one_worker(protein_id: str, data_root_str: str, sample_frac: float, force: bool) -> tuple[str, str]:
+    """
+    Process-pool-safe wrapper around _build_one.
+
+    Takes only picklable primitive arguments and creates its own logger
+    so it can be submitted to ProcessPoolExecutor.
+
+    Returns (protein_id, status) where status is "ok", "skip", or "fail".
+    """
+    from pathlib import Path
+    from src.utils.config import get_config
+    from src.utils.helpers import get_pipeline_logger
+
+    data_root = Path(data_root_str)
+    log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
+    status    = _build_one(protein_id, data_root, sample_frac, force, log)
+    return protein_id, status
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Pre-build and cache PyG graphs for a filtered set of proteins."
@@ -100,6 +121,11 @@ def main() -> None:
         "--force", action="store_true",
         help="Rebuild and overwrite existing cached graphs.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Number of parallel worker processes (default: 1). "
+             "Set >1 to build graphs concurrently across proteins.",
+    )
     add_filter_args(parser)
     args = parser.parse_args()
 
@@ -112,22 +138,43 @@ def main() -> None:
         return
 
     log.info(
-        "Building graphs for %d proteins  sample_frac=%.2f  force=%s",
-        len(protein_ids), args.sample_frac, args.force,
+        "Building graphs for %d proteins  sample_frac=%.2f  force=%s  workers=%d",
+        len(protein_ids), args.sample_frac, args.force, args.workers,
     )
 
     n_ok = n_skip = n_fail = 0
-    for protein_id in protein_ids:
-        status = _build_one(protein_id, data_root, args.sample_frac, args.force, log)
-        if status == "ok":
-            n_ok   += 1
-            notify(protein_id, "complete", "graph build")
-        elif status == "skip":
-            n_skip += 1
-            notify(protein_id, "skipped", "graph build")
-        else:
-            n_fail += 1
-            notify(protein_id, "failed", "graph build")
+
+    if args.workers == 1:
+        # Sequential path — simpler stack traces when debugging.
+        for protein_id in protein_ids:
+            status = _build_one(protein_id, data_root, args.sample_frac, args.force, log)
+            if status == "ok":
+                n_ok   += 1; notify(protein_id, "complete", "graph build")
+            elif status == "skip":
+                n_skip += 1; notify(protein_id, "skipped",  "graph build")
+            else:
+                n_fail += 1; notify(protein_id, "failed",   "graph build")
+    else:
+        # Parallel path — one process per protein.
+        results = run_parallel(
+            _build_one_worker,
+            [(pid, str(data_root), args.sample_frac, args.force) for pid in protein_ids],
+            n_workers=args.workers,
+            label="graphs",
+        )
+        for protein_id, outcome in results:
+            if isinstance(outcome, Exception):
+                n_fail += 1
+                notify(protein_id, "failed", f"graph build exception: {outcome}")
+                log.error("[%s] Worker exception: %s", protein_id, outcome)
+                continue
+            _, status = outcome
+            if status == "ok":
+                n_ok   += 1; notify(protein_id, "complete", "graph build")
+            elif status == "skip":
+                n_skip += 1; notify(protein_id, "skipped",  "graph build")
+            else:
+                n_fail += 1; notify(protein_id, "failed",   "graph build")
 
     log.info("Done — ok: %d  skipped: %d  failed: %d", n_ok, n_skip, n_fail)
     print(f"Done — ok: {n_ok}  skipped: {n_skip}  failed: {n_fail}")
