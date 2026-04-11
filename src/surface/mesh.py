@@ -1,15 +1,11 @@
 """
 src/surface/mesh.py
 
-Universal SES mesh builder.
+SES mesh builder from PQR files.
 
-Accepts any supported structure file (.pdb or .pqr), builds a solvent-
-excluded surface (SES) mesh via MSMS, saves the mesh as .npz and .vtk,
-and updates the protein's metadata JSON with mesh metrics.
-
-Supported input formats:
-    .pdb  — atom radii looked up from MDAnalysis vdW tables
-    .pqr  — atom radii read directly from file (col 9)
+Reads a PDB2PQR-generated .pqr file, builds a solvent-excluded surface
+(SES) mesh via MSMS, saves the mesh as .npz and .vtk, and updates the
+protein's metadata JSON with mesh metrics.
 
 Output .npz contains:
     verts     (N, 3) float32  — vertex coordinates
@@ -19,14 +15,12 @@ Output .npz contains:
     n_verts   scalar int      — number of vertices
 
 Metadata fields added:
-    n_vertices_<suffix>  — number of surface vertices
-    ses_area_<suffix>    — SES area in Å²
-
-where <suffix> is 'pdb' or 'pqr' depending on input type.
+    n_vertices_pqr  — number of surface vertices
+    ses_area_pqr    — SES area in Å²
 
 Usage (from a script):
     from src.surface.mesh import build_mesh
-    build_mesh(input_file=p.pdb_path, protein_id="AF-Q16613-F1",
+    build_mesh(pqr_file=p.pqr_path, protein_id="AF-Q16613-F1",
                data_root=Path("/data"))
 """
 
@@ -36,8 +30,6 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import MDAnalysis as mda
-from MDAnalysis.topology.tables import vdwradii as mda_vdwradii
 
 from src.utils.config import get_config
 from src.utils.helpers import get_logger, timer
@@ -95,46 +87,6 @@ def xyzr_from_pqr(pqr_file: Path, plog) -> tuple[list[str], np.ndarray]:
 
     plog.info("Parsed %d atoms from PQR file", len(xyzr_lines))
     return xyzr_lines, np.array(positions, dtype=np.float32)
-
-
-def xyzr_from_pdb(pdb_file: Path, plog) -> tuple[list[str], np.ndarray]:
-    """
-    Parse a .pdb file via MDAnalysis and return MSMS-ready xyzr lines and
-    atom positions. Atom radii are looked up from MDAnalysis vdW tables.
-    """
-    clean_lines = [
-        line for line in open(pdb_file).readlines()
-        if (line.startswith("ATOM") or line.startswith("HETATM"))
-        and line[76:78].strip()
-    ]
-
-    with tempfile.NamedTemporaryFile(suffix=".pdb", delete=False, mode="w") as tmp:
-        tmp.writelines(clean_lines)
-        tmp_path = Path(tmp.name)
-
-    try:
-        u     = mda.Universe(str(tmp_path))
-        atoms = u.select_atoms("all")
-
-        xyzr_lines = []
-        for atom in atoms:
-            element = atom.element.upper() if atom.element else ""
-            radius  = mda_vdwradii.get(element)
-            if radius is None:
-                raise ValueError(
-                    f"No vdW radius for element '{element}' "
-                    f"(atom: {atom.name}, residue: {atom.resname} {atom.resid})"
-                )
-            xyzr_lines.append(
-                f"{atom.position[0]:.3f} {atom.position[1]:.3f} "
-                f"{atom.position[2]:.3f} {radius:.3f}"
-            )
-        positions = atoms.positions.copy()
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    plog.info("Parsed %d atoms from PDB file", len(xyzr_lines))
-    return xyzr_lines, positions.astype(np.float32)
 
 
 # ── MSMS runner ───────────────────────────────────────────────────────────────
@@ -260,57 +212,40 @@ def export_vtk(out_path: Path, verts: np.ndarray, faces: np.ndarray, plog) -> No
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def build_mesh(input_file: Path, protein_id: str, data_root: Path) -> Path:
+def build_mesh(pqr_file: Path, protein_id: str, data_root: Path) -> Path:
     """
-    Build a SES mesh from any supported structure file and save outputs to
-    the protein's mesh/ subdirectory. Updates the protein's metadata JSON.
+    Build a SES mesh from a .pqr file and save outputs to the protein's
+    mesh/ subdirectory. Updates the protein's metadata JSON.
 
     Args:
-        input_file: path to a .pdb or .pqr structure file
+        pqr_file:   path to the PDB2PQR-generated .pqr structure file
         protein_id: e.g. "AF-Q16613-F1"
         data_root:  root of the external data directory
 
     Returns:
         Path to the saved .npz mesh file
-
-    Raises:
-        ValueError: if the file extension is not supported
     """
-    input_file = Path(input_file)
-    ext        = input_file.suffix.lower()
+    pqr_file = Path(pqr_file)
 
     p    = ProteinPaths(protein_id, data_root)
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
 
-    plog.info("── Building mesh from %s ──", input_file.name)
+    plog.info("── Building mesh from %s ──", pqr_file.name)
 
-    if ext == ".pdb":
-        suffix     = "pdb"
-        npz_path   = p.pdb_mesh_path
-        vtk_path   = p.pdb_vtk_path
-        xyzr_lines, positions = xyzr_from_pdb(input_file, plog)
-    elif ext == ".pqr":
-        suffix     = "pqr"
-        npz_path   = p.pqr_mesh_path
-        vtk_path   = p.pqr_vtk_path
-        xyzr_lines, positions = xyzr_from_pqr(input_file, plog)
-    else:
-        raise ValueError(
-            f"Unsupported structure file type '{ext}'. Expected .pdb or .pqr."
-        )
+    xyzr_lines, positions = xyzr_from_pqr(pqr_file, plog)
 
     with timer() as t:
         verts, normals, faces, ses_area = run_msms(xyzr_lines, positions, plog)
     plog.info("MSMS total: %.2f s", t.seconds)
 
-    save_npz_mesh(npz_path, verts, normals, faces, ses_area, plog)
-    export_vtk(vtk_path, verts, faces, plog)
+    save_npz_mesh(p.pqr_mesh_path, verts, normals, faces, ses_area, plog)
+    export_vtk(p.pqr_vtk_path, verts, faces, plog)
 
     update_metadata(protein_id, data_root=data_root, data={
-        f"n_vertices_{suffix}"      : int(len(verts)),
-        f"ses_area_{suffix}"        : float(ses_area),
-        f"time_mesh_{suffix}_sec"   : t.rounded,
+        "n_vertices_pqr"    : int(len(verts)),
+        "ses_area_pqr"      : float(ses_area),
+        "time_mesh_pqr_sec" : t.rounded,
     })
 
-    plog.info("Mesh complete: %s (%s)", protein_id, suffix)
-    return npz_path
+    plog.info("Mesh complete: %s", protein_id)
+    return p.pqr_mesh_path

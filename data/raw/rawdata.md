@@ -1,1 +1,0 @@
-raw data will be the .pdb file
