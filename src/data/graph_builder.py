@@ -256,7 +256,6 @@ def build_graph(
     protein_id: str,
     data_root: Path,
     *,
-    variant: str = "interp",
     sample_frac: float = 0.05,
     knn_radial: int = 16,
     knn_aq: int = 32,
@@ -270,7 +269,6 @@ def build_graph(
     Args:
         protein_id:  e.g. "AF-Q16613-F1"
         data_root:   root of the external data directory
-        variant:     ESP target variant — currently only "interp" is supported
         sample_frac: fraction of mesh vertices to use as query nodes
         knn_radial:  k for radial supplementary atom-atom kNN (bond pairs excluded)
         knn_aq:      k for atom→query edges (query-centric)
@@ -290,8 +288,8 @@ def build_graph(
 
     if not p.pqr_path.exists():
         raise FileNotFoundError(f"PQR not found: {p.pqr_path}")
-    if not p.pqr_mesh_path.exists():
-        raise FileNotFoundError(f"Mesh not found: {p.pqr_mesh_path}")
+    if not p.mesh_path.exists():
+        raise FileNotFoundError(f"Mesh not found: {p.mesh_path}")
 
     # ── 1. Bond graph from PQR ────────────────────────────────────────────────
     log.info("%s  building bond graph", protein_id)
@@ -317,7 +315,7 @@ def build_graph(
 
     # ── 3. Mesh → query points ────────────────────────────────────────────────
     log.info("%s  sampling query points (frac=%.2f)", protein_id, sample_frac)
-    mesh     = np.load(p.pqr_mesh_path)
+    mesh     = np.load(p.mesh_path)
     verts    = mesh["verts"]
     faces    = mesh["faces"]
     ses_area = float(mesh["ses_area"])
@@ -328,7 +326,7 @@ def build_graph(
     n_query   = len(query_xyz)
 
     # ── 4. ESP target (optional) ──────────────────────────────────────────────
-    esp_path = p.pqr_interp_path
+    esp_path = p.esp_path
     query_esp: np.ndarray | None = None
     if esp_path.exists():
         esp_data  = np.load(esp_path)
@@ -393,7 +391,6 @@ def build_graph(
 
     # Metadata
     data.protein_id = protein_id
-    data.variant    = variant
     data.n_atoms    = n_atoms
     data.n_query    = n_query
 

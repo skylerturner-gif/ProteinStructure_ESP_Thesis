@@ -40,12 +40,12 @@ def main():
     for protein_id in protein_ids:
         p = ProteinPaths(protein_id, data_root)
 
-        if p.all_sampled_exist():
-            log.info("[%s] All sampled files exist — skipping", protein_id)
+        if p.esp_exists():
+            log.info("[%s] ESP file exists — skipping", protein_id)
             notify(protein_id, "skipped", "esp sampling")
             continue
 
-        missing = [f for f in [p.pqr_mesh_path, p.dx_path] if not f.exists()]
+        missing = [f for f in [p.mesh_path, p.dx_path] if not f.exists()]
         if missing:
             for f in missing:
                 log.error("[%s] Missing: %s", protein_id, f.name)

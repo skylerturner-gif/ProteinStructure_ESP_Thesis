@@ -98,7 +98,7 @@ class AttentionESPN(nn.Module):
         hidden_dim:        node feature dimensionality (default 128)
         n_rbf:             RBF basis functions per edge (default 16)
         n_heads:           attention heads in AQ layers (default 4)
-        n_cov_supp_rounds: Stage 1 rounds (default 2)
+        n_bond_radial_rounds: Stage 1 rounds (default 2)
         n_aq_rounds:       Stage 2 rounds (default 3)
         n_qq_rounds:       Stage 3 rounds (default 2)
     """
@@ -108,7 +108,7 @@ class AttentionESPN(nn.Module):
         hidden_dim: int = 128,
         n_rbf:      int = 16,
         n_heads:    int = 4,
-        n_cov_supp_rounds: int = 2,
+        n_bond_radial_rounds: int = 2,
         n_aq_rounds:       int = 3,
         n_qq_rounds:       int = 2,
     ) -> None:
@@ -117,7 +117,7 @@ class AttentionESPN(nn.Module):
 
         self.n_aq_rounds  = n_aq_rounds
         self.atom_encoder = AtomEncoder(hidden_dim)
-        self.atom_mp      = _AtomMP(hidden_dim, n_rbf, n_cov_supp_rounds)
+        self.atom_mp      = _AtomMP(hidden_dim, n_rbf, n_bond_radial_rounds)
         self.aq_layer     = AQAttentionLayer(hidden_dim, n_rbf, n_heads)
         self.query_refine = _QueryRefine(hidden_dim, n_rbf, n_qq_rounds)
         self.output_head  = _mlp([hidden_dim, hidden_dim // 2, 1])

@@ -43,7 +43,7 @@ class ProteinGraphDataset(Dataset):
     Lazy-loading dataset of pre-built protein HeteroData graphs.
 
     Each graph is loaded from:
-        <data_root>/<protein_id>/graph/<protein_id>_graph_<variant>.pt
+        <data_root>/<protein_id>/graph/<protein_id>_graph.pt
 
     If a cached file is missing and rebuild=True, the graph is built on the
     fly and saved before returning.  During normal training, graphs should be
@@ -52,7 +52,6 @@ class ProteinGraphDataset(Dataset):
     Args:
         protein_ids:  iterable of protein ID strings (e.g. ["AF-Q16613-F1"])
         data_root:    root of the external data directory
-        variant:      ESP target variant — currently only "interp"
         sample_frac:  fraction of mesh vertices used as query nodes
                       (only relevant when rebuilding)
         rebuild:      if True, rebuild and overwrite cached graphs on access
@@ -64,14 +63,12 @@ class ProteinGraphDataset(Dataset):
         protein_ids,
         data_root: Path,
         *,
-        variant: str = "interp",
         sample_frac: float = 0.05,
         rebuild: bool = False,
         transform=None,
     ) -> None:
         self.protein_ids = list(protein_ids)
         self.data_root   = Path(data_root)
-        self.variant     = variant
         self.sample_frac = sample_frac
         self.rebuild     = rebuild
         self.transform   = transform
@@ -82,7 +79,7 @@ class ProteinGraphDataset(Dataset):
     def __getitem__(self, idx: int):
         protein_id = self.protein_ids[idx]
         p          = ProteinPaths(protein_id, self.data_root)
-        graph_path = p.graph_path(self.variant)
+        graph_path = p.graph_path()
 
         if not graph_path.exists() and not self.rebuild:
             raise FileNotFoundError(
@@ -94,7 +91,7 @@ class ProteinGraphDataset(Dataset):
             p.ensure_dirs()
             data = build_graph(
                 protein_id, self.data_root,
-                variant=self.variant, sample_frac=self.sample_frac,
+                sample_frac=self.sample_frac,
             )
             torch.save(data, graph_path)
         else:
@@ -107,8 +104,7 @@ class ProteinGraphDataset(Dataset):
 
     def __repr__(self) -> str:
         return (
-            f"ProteinGraphDataset(n={len(self)}, variant={self.variant!r}, "
-            f"sample_frac={self.sample_frac})"
+            f"ProteinGraphDataset(n={len(self)}, sample_frac={self.sample_frac})"
         )
 
 
@@ -235,7 +231,6 @@ def split_dataset(
 
     shared = dict(
         data_root   = dataset.data_root,
-        variant     = dataset.variant,
         sample_frac = dataset.sample_frac,
         rebuild     = False,
     )
