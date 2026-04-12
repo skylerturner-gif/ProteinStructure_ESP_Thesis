@@ -36,3 +36,36 @@ esp_mapping:
 
 logging:
   level: INFO              # DEBUG, INFO, WARNING, ERROR
+
+# Conda environment names used by pipelines/full_pipeline.py.
+# Leave as empty string (or omit the section) if both pipelines run in the
+# same environment. CLI flags --data-env / --model-env override these values.
+environments:
+  data_gen: ""             # e.g. protein_esp
+  model:    ""             # e.g. pyg_env
+
+# Default model architecture.
+# All values can be overridden via CLI flags in pipelines/model_pipeline.py.
+model:
+  type:                 attention   # distance | attention
+  hidden_dim:           128
+  n_rbf:                16
+  n_heads:              4           # attention model only
+  n_bond_radial_rounds: 2
+  n_aq_rounds:          3
+  n_qq_rounds:          2
+
+# Default training hyperparameters.
+# All values can be overridden via CLI flags in pipelines/model_pipeline.py.
+training:
+  epochs:               100
+  lr:                   3e-4
+  weight_decay:         1e-4
+  pearson_weight:       0.1
+  clip_grad:            1.0
+  lr_patience:          15
+  max_edges_per_batch:  200000
+  sample_frac:          0.05
+  train_frac:           0.8
+  val_frac:             0.1
+  split_seed:           42
