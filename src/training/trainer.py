@@ -29,13 +29,17 @@ Each checkpoint contains:
 
 from __future__ import annotations
 
+import csv
+import json
 import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch_geometric.data import HeteroData
+from torch_geometric.loader import DataLoader as PyGLoader
 
 from src.training.loss import ESPLoss, pearson_r
 from src.utils.helpers import get_logger
@@ -82,6 +86,11 @@ class Trainer:
 
         self.best_val_loss  = float("inf")
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        self.history: dict[str, list] = {
+            "epoch": [], "train_loss": [], "val_loss": [],
+            "val_rmse": [], "val_pearson_r": [], "lr": [],
+        }
 
     # ── Single epoch loops ────────────────────────────────────────────────────
 
@@ -184,6 +193,14 @@ class Trainer:
             if is_best:
                 self._save_checkpoint("best_model.pt", epoch, val_m)
 
+            self.history["epoch"].append(epoch)
+            self.history["train_loss"].append(train_m["loss"])
+            self.history["val_loss"].append(val_m["loss"])
+            self.history["val_rmse"].append(val_m["rmse"])
+            self.history["val_pearson_r"].append(val_m["pearson_r"])
+            self.history["lr"].append(current_lr)
+            self._save_metrics_csv()
+
             marker = " *" if is_best else ""
             print(
                 f"{epoch:>6}  {train_m['loss']:>11.4f}  {val_m['loss']:>10.4f}  "
@@ -221,6 +238,31 @@ class Trainer:
         )
         log.info("Saved checkpoint → %s", path)
 
+    def _save_metrics_csv(self) -> None:
+        """Write the full epoch history to metrics.csv (overwritten each epoch)."""
+        path = self.checkpoint_dir / "metrics.csv"
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(self.history.keys()))
+            writer.writeheader()
+            n = len(self.history["epoch"])
+            for i in range(n):
+                writer.writerow({k: self.history[k][i] for k in self.history})
+
+    # ── Test evaluation ───────────────────────────────────────────────────────
+
+    def evaluate_test(
+        self,
+        test_ds,
+        *,
+        predictions_dir: Path | None = None,
+    ) -> dict:
+        """Thin wrapper — delegates to the module-level :func:`evaluate_test`."""
+        return evaluate_test(
+            self.model, self.loss_fn, test_ds, self.device, self.extra_state,
+            checkpoint_dir  = self.checkpoint_dir,
+            predictions_dir = predictions_dir,
+        )
+
     @staticmethod
     def load_checkpoint(
         path: Path,
@@ -245,3 +287,125 @@ class Trainer:
             path, ckpt.get("epoch", -1), ckpt.get("val_loss", float("nan")),
         )
         return ckpt
+
+
+# ── Standalone test evaluation ─────────────────────────────────────────────────
+
+def evaluate_test(
+    model,
+    loss_fn: ESPLoss,
+    test_ds,
+    device: torch.device,
+    extra_state: dict[str, Any],
+    *,
+    checkpoint_dir: Path,
+    predictions_dir: Path | None = None,
+) -> dict:
+    """
+    Run inference on a test dataset, compute per-protein metrics, and
+    optionally save per-protein prediction files.
+
+    This is a module-level function so it can be called from a standalone
+    inference script (e.g. scripts/09_evaluate_model.py) without constructing
+    a full Trainer instance.  The :class:`Trainer` method delegates here.
+
+    Iterates one protein at a time (batch_size=1) so that protein_id can be
+    tracked directly via test_ds.protein_ids.  ESP values are un-normalized
+    before metric computation using esp_mean/esp_std from extra_state.
+
+    Args:
+        model:           trained model in eval state after calling this function
+        loss_fn:         ESPLoss instance
+        test_ds:         ProteinGraphDataset for the test split (transform
+                         should already be set to NormalizeESP)
+        device:          torch.device to run inference on
+        extra_state:     dict containing at least esp_mean and esp_std
+                         (as stored in checkpoints via Trainer.extra_state)
+        checkpoint_dir:  directory where test_metrics.json is written
+        predictions_dir: if provided, save <protein_id>_pred.npz here for
+                         every protein — each file contains query_pos,
+                         pred_esp, and true_esp in kT/e
+
+    Returns:
+        dict with keys:
+            "global":      {loss, rmse, mae, pearson_r, n_proteins}
+            "per_protein": {protein_id: {rmse, mae, pearson_r, n_query_nodes}}
+
+    Also writes:
+        <checkpoint_dir>/test_metrics.json
+    """
+    if predictions_dir is not None:
+        predictions_dir = Path(predictions_dir)
+        predictions_dir.mkdir(parents=True, exist_ok=True)
+
+    esp_mean = float(extra_state.get("esp_mean", 0.0))
+    esp_std  = float(extra_state.get("esp_std",  1.0))
+
+    loader = PyGLoader(test_ds, batch_size=1, shuffle=False)
+    model.eval()
+
+    per_protein: dict[str, dict] = {}
+    total_sq_err  = 0.0
+    total_abs_err = 0.0
+    total_n       = 0
+    total_loss    = 0.0
+    pearson_vals: list[float] = []
+
+    with torch.no_grad():
+        for i, data in enumerate(loader):
+            protein_id = test_ds.protein_ids[i]
+            data       = data.to(device)
+
+            pred   = model(data)
+            target = data["query"].y
+            batch  = data["query"].batch
+
+            loss         = loss_fn(pred, target, batch)
+            total_loss  += loss.item()
+
+            # Un-normalize for interpretable kT/e metrics
+            pred_raw   = pred   * esp_std + esp_mean
+            target_raw = target * esp_std + esp_mean
+
+            n       = target_raw.shape[0]
+            sq_err  = ((pred_raw - target_raw) ** 2).sum().item()
+            abs_err = (pred_raw - target_raw).abs().sum().item()
+            r       = pearson_r(pred_raw, target_raw).item()
+
+            total_sq_err  += sq_err
+            total_abs_err += abs_err
+            total_n       += n
+            pearson_vals.append(r)
+
+            per_protein[protein_id] = {
+                "rmse":          float((sq_err / n) ** 0.5),
+                "mae":           float(abs_err / n),
+                "pearson_r":     float(r),
+                "n_query_nodes": int(n),
+            }
+
+            if predictions_dir is not None:
+                np.savez_compressed(
+                    predictions_dir / f"{protein_id}_pred.npz",
+                    query_pos = data["query"].pos.cpu().numpy(),
+                    pred_esp  = pred_raw.cpu().numpy(),
+                    true_esp  = target_raw.cpu().numpy(),
+                )
+
+    n_proteins = len(per_protein)
+    global_metrics = {
+        "loss":       float(total_loss / max(len(loader), 1)),
+        "rmse":       float((total_sq_err  / max(total_n, 1)) ** 0.5),
+        "mae":        float(total_abs_err  / max(total_n, 1)),
+        "pearson_r":  float(sum(pearson_vals) / max(len(pearson_vals), 1)),
+        "n_proteins": n_proteins,
+    }
+
+    results = {"global": global_metrics, "per_protein": per_protein}
+
+    metrics_path = Path(checkpoint_dir) / "test_metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(results, f, indent=2)
+    log.info("Test metrics saved → %s", metrics_path)
+
+    return results
