@@ -1,283 +1,219 @@
 """
-pipeline/full_pipeline.py
+pipelines/full_pipeline.py
 
-Full end-to-end pipeline for the ProteinStructure ESP project.
+Top-level orchestrator — runs the data generation pipeline then the model
+pipeline, each optionally inside its own conda environment.
 
-Runs all pipeline steps sequentially for each selected protein fragment:
-    1. Download AlphaFold structures (all fragments per UniProt ID)
-    2. Run PDB2PQR (charge/radius assignment)
-    3. Run APBS (electrostatic potential calculation)
-    4. Generate PQR surface mesh via MSMS
-    5. Sample ESP onto the PQR mesh (interpolated + Laplacian)
-    6. Evaluate predictions (Pearson r, RMSE → metadata)
+Sub-pipelines:
+    data_gen_pipeline.py  — download → PDB2PQR → APBS → mesh → ESP → evaluate
+    model_pipeline.py     — build graphs → train ESP prediction model
 
-Each step is skipped if its output files already exist.
-Failed steps are logged to the per-protein log file.
-A single terminal line is printed when each protein completes or fails.
-Pipeline status (pipeline_complete, pipeline_steps) is written to metadata.
+Conda environment names default to the `environments:` section of config.yaml.
+Override them with --data-env / --model-env. If an env name is empty or absent,
+the pipeline runs in the current Python interpreter without conda switching.
 
 Usage:
-    python pipeline/full_pipeline.py --id-file data/protein_ids.txt
-    python pipeline/full_pipeline.py --id-file data/protein_ids.txt --data-root /path/to/data
+    # Run both pipelines (single conda env):
+    python pipelines/full_pipeline.py --id-file data/protein_ids.txt
+
+    # Run both pipelines in separate conda environments:
+    python pipelines/full_pipeline.py --id-file data/protein_ids.txt \\
+        --data-env protein_esp_data --model-env protein_esp_model
+
+    # Data generation only:
+    python pipelines/full_pipeline.py --id-file data/protein_ids.txt --skip-model
+
+    # Model pipeline only (data already generated):
+    python pipelines/full_pipeline.py --id-file data/protein_ids.txt --skip-data-gen
+
+    # Pass extra options to each sub-pipeline:
+    python pipelines/full_pipeline.py --id-file data/protein_ids.txt \\
+        --data-env protein_esp_data --model-env protein_esp_model \\
+        --workers 4 --keep-dx \\
+        --model attention --epochs 150 --force
 """
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 
-from src.analysis.metrics import evaluate_protein
-from src.electrostatics.run_apbs import process_apbs
-from src.electrostatics.run_pdb2pqr import process_pdb2pqr
-from src.structure.af_api import download_protein, find_downloaded_protein_ids, read_uniprot_ids
-from src.surface.esp_mapping import sample_esp
-from src.surface.mesh import build_mesh
 from src.utils.config import get_config, get_data_root
-from src.utils.helpers import get_pipeline_logger, notify, timer
-from src.utils.io import update_metadata
-from src.utils.parallel import run_parallel
-from src.utils.paths import ProteinPaths
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ── Per-protein pipeline ──────────────────────────────────────────────────────
-
-def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool = False) -> dict:
+def _run_pipeline(script: Path, extra_args: list[str], env_name: str | None) -> bool:
     """
-    Run all pipeline steps for a single protein fragment.
-    All detailed logging goes to the per-protein log file.
-    Returns a dict mapping step name to 'success', 'skipped', or 'failed'.
+    Run a pipeline script as a subprocess.
 
-    Args:
-        keep_dx: if True, write the APBS .dx file permanently to disk.
-                 if False (default), process the ESP grid in memory only.
+    If env_name is set, wraps the call with `conda run --no-capture-output -n <env>`
+    so the script runs inside that conda environment. Returns True on success.
     """
-    p    = ProteinPaths(protein_id, data_root)
-    plog = pipeline_log
-
-    step_results = {}
-    grid_data    = None   # (axes, grid) from APBS — threaded to sample_esp
-
-    with timer() as t_total:
-
-        # ── Step 2: PDB2PQR ───────────────────────────────────────────────────
-        if p.pqr_path.exists():
-            step_results["pdb2pqr"] = "skipped"
-        elif not p.cif_path.exists():
-            plog.error("[%s] Step 2: CIF missing", protein_id)
-            step_results["pdb2pqr"] = "failed"
-        else:
-            ok = process_pdb2pqr(protein_id, data_root)
-            step_results["pdb2pqr"] = "success" if ok else "failed"
-
-        # ── Step 3: APBS ─────────────────────────────────────────────────────
-        # Skip condition depends on keep_dx:
-        #   keep_dx=True  → skip if .dx already on disk
-        #   keep_dx=False → skip if final sampled output already exists
-        apbs_already_done = (
-            p.dx_path.exists() if keep_dx else p.esp_exists()
-        )
-        if apbs_already_done:
-            step_results["apbs"] = "skipped"
-        elif not p.pqr_path.exists():
-            plog.error("[%s] Step 3: PQR missing", protein_id)
-            step_results["apbs"] = "failed"
-        else:
-            result = process_apbs(protein_id, data_root, keep_dx=keep_dx)
-            if result is None:
-                step_results["apbs"] = "failed"
-            else:
-                step_results["apbs"] = "success"
-                grid_data = result  # pass to sample_esp below
-
-        # ── Step 4: Mesh generation ───────────────────────────────────────────
-        if p.mesh_path.exists():
-            step_results["mesh"] = "skipped"
-        elif not p.pqr_path.exists():
-            plog.error("[%s] Step 4: PQR missing", protein_id)
-            step_results["mesh"] = "failed"
-        else:
-            try:
-                build_mesh(p.pqr_path, protein_id, data_root)
-                step_results["mesh"] = "success"
-            except Exception as e:
-                plog.error("[%s] Step 4 mesh failed: %s", protein_id, e)
-                step_results["mesh"] = "failed"
-
-        # ── Step 5: ESP sampling ──────────────────────────────────────────────
-        # Skip if final output already exists AND no fresh grid in memory.
-        if p.esp_exists() and grid_data is None:
-            step_results["esp_sampling"] = "skipped"
-        elif step_results.get("apbs") == "skipped" and p.esp_exists():
-            step_results["esp_sampling"] = "skipped"
-        elif not p.mesh_path.exists():
-            plog.error("[%s] Step 5: mesh missing", protein_id)
-            step_results["esp_sampling"] = "failed"
-        elif grid_data is None and not p.dx_path.exists():
-            plog.error("[%s] Step 5: no grid in memory and no .dx on disk", protein_id)
-            step_results["esp_sampling"] = "failed"
-        else:
-            ok = sample_esp(protein_id, data_root, grid_data=grid_data)
-            step_results["esp_sampling"] = "success" if ok else "failed"
-
-        # ── Step 6: Evaluate ──────────────────────────────────────────────────
-        if p.is_evaluated():
-            step_results["evaluate"] = "skipped"
-        elif not p.esp_exists():
-            plog.error("[%s] Step 6: ESP file missing", protein_id)
-            step_results["evaluate"] = "failed"
-        else:
-            try:
-                evaluate_protein(protein_id, data_root, write_metadata=True)
-                step_results["evaluate"] = "success"
-            except Exception as e:
-                plog.error("[%s] Step 6 failed: %s", protein_id, e)
-                step_results["evaluate"] = "failed"
-
-    try:
-        update_metadata(protein_id, data_root=data_root, data={
-            "time_total_sec": t_total.rounded,
-        })
-    except Exception:
-        pass
-
-    any_failed   = any(v == "failed" for v in step_results.values())
-    status       = "failed" if any_failed else "complete"
-    failed_steps = [k for k, v in step_results.items() if v == "failed"]
-    detail       = f"{t_total.rounded}s" + (f"  failed: {', '.join(failed_steps)}" if failed_steps else "")
-
-    notify(protein_id, status, detail)
-    plog.info("[%s] Done in %.1f s  steps: %s", protein_id, t_total.seconds, step_results)
-
-    return step_results
+    cmd = [sys.executable, str(script)] + extra_args
+    if env_name:
+        cmd = ["conda", "run", "--no-capture-output", "-n", env_name] + cmd
+    result = subprocess.run(cmd, check=False)
+    return result.returncode == 0
 
 
-def _run_protein_worker(protein_id: str, data_root_str: str, keep_dx: bool) -> tuple[str, dict]:
-    """
-    Process-pool-safe wrapper around _run_protein.
-
-    Takes only picklable primitive arguments and creates its own logger
-    so it can be submitted to ProcessPoolExecutor via run_parallel.
-
-    Returns (protein_id, step_results).
-    """
-    from pathlib import Path
-    from src.utils.config import get_config
-    from src.utils.helpers import get_pipeline_logger
-
-    data_root = Path(data_root_str)
-    log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
-    steps     = _run_protein(protein_id, data_root, log, keep_dx=keep_dx)
-    return protein_id, steps
-
-
-# ── Summary ───────────────────────────────────────────────────────────────────
-
-def _log_summary(all_results: dict, log) -> None:
-    steps = ["pdb2pqr", "apbs", "mesh", "esp_sampling", "evaluate"]
-    log.info("═" * 70)
-    log.info("PIPELINE SUMMARY")
-    log.info("═" * 70)
-    for step in steps:
-        counts = {"success": 0, "skipped": 0, "failed": 0}
-        for step_results in all_results.values():
-            outcome = step_results.get(step, "n/a")
-            if outcome in counts:
-                counts[outcome] += 1
-        log.info("  %-20s  success=%d  skipped=%d  failed=%d",
-                 step, counts["success"], counts["skipped"], counts["failed"])
-    log.info("═" * 70)
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Full end-to-end ESP pipeline."
+        description=(
+            "Full ESP pipeline orchestrator. "
+            "Runs data_gen_pipeline.py then model_pipeline.py, "
+            "each optionally in its own conda environment."
+        )
     )
-    parser.add_argument("--id-file", type=Path, required=True)
-    parser.add_argument("--data-root", type=Path, default=None)
+
+    # ── Common ────────────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--id-file", type=Path, required=True,
+        help="File of UniProt IDs passed to data_gen_pipeline.py.",
+    )
+    parser.add_argument(
+        "--data-root", type=Path, default=None,
+        help="Override data_root from config.yaml (passed to both sub-pipelines).",
+    )
+
+    # ── Environment selection ─────────────────────────────────────────────────
+    parser.add_argument(
+        "--data-env", type=str, default=None,
+        help="Conda env for data_gen_pipeline.py. "
+             "Defaults to config environments.data_gen (skips conda if empty).",
+    )
+    parser.add_argument(
+        "--model-env", type=str, default=None,
+        help="Conda env for model_pipeline.py. "
+             "Defaults to config environments.model (skips conda if empty).",
+    )
+
+    # ── Step skipping ─────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--skip-data-gen", action="store_true",
+        help="Skip the data generation pipeline.",
+    )
+    parser.add_argument(
+        "--skip-model", action="store_true",
+        help="Skip the model pipeline.",
+    )
+
+    # ── Data-gen pass-through ─────────────────────────────────────────────────
     parser.add_argument(
         "--workers", type=int, default=1,
-        help="Number of parallel worker processes for the per-protein pipeline "
-             "(default: 1). Set >1 to process multiple proteins concurrently.",
+        help="Worker processes for data_gen_pipeline.py (default: 1).",
     )
     parser.add_argument(
-        "--keep-dx", action="store_true", default=False,
-        help="Write the APBS .dx file permanently to <protein>/electrostatics/. "
-             "By default the .dx is processed in memory and never saved to disk.",
+        "--keep-dx", action="store_true",
+        help="Keep APBS .dx files on disk (passed to data_gen_pipeline.py).",
     )
+
+    # ── Model pass-through ────────────────────────────────────────────────────
+    parser.add_argument(
+        "--model", type=str, default=None, choices=["distance", "attention"],
+        help="Model type. Overrides config model.type (passed to model_pipeline.py).",
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=None,
+        help="Training epochs. Overrides config training.epochs.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir", type=Path, default=None,
+        help="Checkpoint directory (passed to model_pipeline.py).",
+    )
+    parser.add_argument(
+        "--resume", type=Path, default=None,
+        help="Checkpoint path to resume training from.",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Rebuild cached graphs (passed to model_pipeline.py).",
+    )
+    parser.add_argument(
+        "--skip-graphs", action="store_true",
+        help="Skip graph building inside model_pipeline.py.",
+    )
+    parser.add_argument(
+        "--skip-training", action="store_true",
+        help="Skip model training inside model_pipeline.py.",
+    )
+    parser.add_argument(
+        "--model-workers", type=int, default=1,
+        help="Worker processes for graph building inside model_pipeline.py (default: 1).",
+    )
+
     args = parser.parse_args()
 
+    cfg       = get_config()
     data_root = args.data_root or get_data_root()
-    log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
+    env_cfg   = cfg.get("environments", {})
 
-    if not args.id_file.exists():
-        log.error("ID file not found: %s", args.id_file)
-        return
+    # Resolve env names: CLI > config > None (run in current interpreter)
+    data_env  = args.data_env  or (env_cfg.get("data_gen") or None)
+    model_env = args.model_env or (env_cfg.get("model")    or None)
 
-    uniprot_ids = read_uniprot_ids(args.id_file)
-    if not uniprot_ids:
-        log.warning("No UniProt IDs found in %s", args.id_file)
-        return
+    data_root_args = ["--data-root", str(data_root)]
+    ok = True
 
-    log.info("Starting pipeline for %d UniProt IDs", len(uniprot_ids))
-    all_results = {}
+    # ── Data generation pipeline ──────────────────────────────────────────────
+    if not args.skip_data_gen:
+        env_label = f"env='{data_env}'" if data_env else "current env"
+        print(f"[full_pipeline] Running data_gen_pipeline.py  ({env_label})")
 
-    with timer() as t_run:
-        for uniprot_id in uniprot_ids:
+        data_gen_args = (
+            ["--id-file", str(args.id_file)]
+            + data_root_args
+            + ["--workers", str(args.workers)]
+        )
+        if args.keep_dx:
+            data_gen_args.append("--keep-dx")
 
-            # ── Step 1: Download all fragments ────────────────────────────────
-            protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
-            if protein_ids:
-                log.info("[%s] Already downloaded: %s — skipping download",
-                         uniprot_id, ", ".join(protein_ids))
-            else:
-                ok = download_protein(uniprot_id, data_root)
-                if not ok:
-                    notify(uniprot_id, "failed", "download")
-                    log.error("[%s] Download failed — skipping all steps", uniprot_id)
-                    continue
-                protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
-                if not protein_ids:
-                    log.error("[%s] Could not resolve any protein_id after download", uniprot_id)
-                    notify(uniprot_id, "failed", "protein_id resolution")
-                    continue
-                notify(uniprot_id, "complete", f"download ({len(protein_ids)} fragments)")
+        ok = _run_pipeline(
+            _PROJECT_ROOT / "pipelines" / "data_gen_pipeline.py",
+            data_gen_args,
+            data_env,
+        )
+        if not ok:
+            print("[full_pipeline] data_gen_pipeline.py exited with errors.")
+    else:
+        print("[full_pipeline] Skipping data gen pipeline (--skip-data-gen).")
 
-            # ── Steps 2-6: Run pipeline for each fragment ─────────────────────
-            if args.workers == 1:
-                for protein_id in protein_ids:
-                    step_results = _run_protein(protein_id, data_root, log, keep_dx=args.keep_dx)
-                    all_results[protein_id] = step_results
-                    try:
-                        update_metadata(protein_id, data_root=data_root, data={
-                            "pipeline_steps"    : step_results,
-                            "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
-                        })
-                    except Exception:
-                        pass
-            else:
-                parallel_results = run_parallel(
-                    _run_protein_worker,
-                    [(pid, str(data_root), args.keep_dx) for pid in protein_ids],
-                    n_workers=args.workers,
-                    label=f"proteins (workers={args.workers})",
-                )
-                for protein_id, outcome in parallel_results:
-                    if isinstance(outcome, Exception):
-                        log.error("[%s] Worker exception: %s", protein_id, outcome)
-                        all_results[protein_id] = {}
-                        continue
-                    _, step_results = outcome  # outcome = (protein_id, step_results) from worker
-                    all_results[protein_id] = step_results
-                    try:
-                        update_metadata(protein_id, data_root=data_root, data={
-                            "pipeline_steps"    : step_results,
-                            "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
-                        })
-                    except Exception:
-                        pass
+    # ── Model pipeline ────────────────────────────────────────────────────────
+    if not args.skip_model and ok:
+        env_label = f"env='{model_env}'" if model_env else "current env"
+        print(f"[full_pipeline] Running model_pipeline.py  ({env_label})")
 
-    _log_summary(all_results, log)
-    log.info("Total pipeline time: %.1f s", t_run.seconds)
+        model_args = ["--all"] + data_root_args
+
+        if args.model:
+            model_args += ["--model", args.model]
+        if args.epochs is not None:
+            model_args += ["--epochs", str(args.epochs)]
+        if args.checkpoint_dir:
+            model_args += ["--checkpoint-dir", str(args.checkpoint_dir)]
+        if args.resume:
+            model_args += ["--resume", str(args.resume)]
+        if args.force:
+            model_args.append("--force")
+        if args.skip_graphs:
+            model_args.append("--skip-graphs")
+        if args.skip_training:
+            model_args.append("--skip-training")
+        if args.model_workers != 1:
+            model_args += ["--workers", str(args.model_workers)]
+
+        ok = _run_pipeline(
+            _PROJECT_ROOT / "pipelines" / "model_pipeline.py",
+            model_args,
+            model_env,
+        )
+        if not ok:
+            print("[full_pipeline] model_pipeline.py exited with errors.")
+    elif args.skip_model:
+        print("[full_pipeline] Skipping model pipeline (--skip-model).")
+
+    print("[full_pipeline] Done." if ok else "[full_pipeline] Finished with errors.")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
