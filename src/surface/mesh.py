@@ -15,8 +15,8 @@ Output .npz contains:
     n_verts   scalar int      — number of vertices
 
 Metadata fields added:
-    n_vertices_pqr  — number of surface vertices
-    ses_area_pqr    — SES area in Å²
+    n_vertices  — number of surface vertices
+    ses_area    — SES area in Å²
 
 Usage (from a script):
     from src.surface.mesh import build_mesh
@@ -238,14 +238,14 @@ def build_mesh(pqr_file: Path, protein_id: str, data_root: Path) -> Path:
         verts, normals, faces, ses_area = run_msms(xyzr_lines, positions, plog)
     plog.info("MSMS total: %.2f s", t.seconds)
 
-    save_npz_mesh(p.pqr_mesh_path, verts, normals, faces, ses_area, plog)
-    export_vtk(p.pqr_vtk_path, verts, faces, plog)
+    save_npz_mesh(p.mesh_path, verts, normals, faces, ses_area, plog)
+    export_vtk(p.vtk_path, verts, faces, plog)
 
     update_metadata(protein_id, data_root=data_root, data={
-        "n_vertices_pqr"    : int(len(verts)),
-        "ses_area_pqr"      : float(ses_area),
-        "time_mesh_pqr_sec" : t.rounded,
+        "n_vertices"    : int(len(verts)),
+        "ses_area"      : float(ses_area),
+        "time_mesh_sec" : t.rounded,
     })
 
     plog.info("Mesh complete: %s", protein_id)
-    return p.pqr_mesh_path
+    return p.mesh_path

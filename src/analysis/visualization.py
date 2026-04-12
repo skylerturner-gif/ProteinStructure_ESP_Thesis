@@ -3,18 +3,12 @@ src/analysis/visualization.py
 
 PyVista-based ESP surface visualization.
 
-Renders a 1×2 comparison of interpolated vs Laplacian ESP for the PQR
-mesh variant of a given protein.
-
-Layout:
-    Left  — Interpolated ESP (nearest-neighbor from APBS)
-    Right — Laplacian-reconstructed ESP
+Renders the sampled ESP surface for a protein.
 
 Usage (from a script or notebook):
-    from src.analysis.visualization import plot_esp_comparison
-    plot_esp_comparison(protein_id="AF-Q16613-F1", data_root=Path("/data"))
-    plot_esp_comparison(protein_id="AF-Q16613-F1", data_root=Path("/data"),
-                        clim=(-5.0, 5.0))
+    from src.analysis.visualization import plot_esp
+    plot_esp(protein_id="AF-Q16613-F1", data_root=Path("/data"))
+    plot_esp(protein_id="AF-Q16613-F1", data_root=Path("/data"), clim=(-5.0, 5.0))
 """
 
 from pathlib import Path
@@ -22,7 +16,6 @@ from pathlib import Path
 import numpy as np
 import pyvista as pv
 
-from src.analysis.metrics import compute_stats
 from src.utils.helpers import get_logger
 from src.utils.paths import ProteinPaths
 
@@ -64,70 +57,55 @@ def _make_pv_mesh(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def plot_esp_comparison(
+def plot_esp(
     protein_id: str,
     data_root: Path,
     clim: tuple[float, float] = None,
 ) -> None:
     """
-    Render a 1×2 PyVista window comparing interpolated vs Laplacian ESP
-    for the PQR mesh.
+    Render a PyVista window showing the ESP surface for a protein.
 
     Args:
         protein_id: e.g. "AF-Q16613-F1"
         data_root:  root of the external data directory
         clim:       optional (min, max) colormap range in kT/e.
-                    Defaults to the global min/max across both panels.
+                    Defaults to the global min/max of the surface.
 
     Raises:
-        FileNotFoundError: if any required sampled .npz file is missing
+        FileNotFoundError: if the ESP .npz file is missing
     """
     p    = ProteinPaths(protein_id, data_root)
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
 
-    missing = [f for f in [p.pqr_interp_path, p.pqr_laplacian_path] if not f.exists()]
-    if missing:
+    if not p.esp_path.exists():
         raise FileNotFoundError(
-            f"Missing sampled files for '{protein_id}':\n" +
-            "\n".join(f"  {f}" for f in missing)
+            f"Missing ESP file for '{protein_id}': {p.esp_path}"
         )
 
-    verts_i, faces_i, esp_verts_i, esp_faces_i = _load_sampled(p.pqr_interp_path,    plog)
-    verts_l, faces_l, esp_verts_l, esp_faces_l = _load_sampled(p.pqr_laplacian_path, plog)
-
-    r_pqr, rmse_pqr = compute_stats(esp_faces_l, esp_faces_i)
-
-    plog.info("── Visualization stats ──")
-    plog.info("  [pqr] Pearson r = %.4f   RMSE = %.4f kT/e", r_pqr, rmse_pqr)
+    verts, faces, esp_verts, esp_faces = _load_sampled(p.esp_path, plog)
 
     if clim is not None:
         plog.info("Colormap range: [%.3f, %.3f] kT/e", *clim)
     else:
-        all_esp = np.concatenate([esp_faces_i, esp_faces_l])
-        clim = (float(all_esp.min()), float(all_esp.max()))
+        clim = (float(esp_faces.min()), float(esp_faces.max()))
         plog.info("Auto colormap range: [%.3f, %.3f] kT/e", *clim)
 
-    mesh_i = _make_pv_mesh(verts_i, faces_i, esp_verts_i, esp_faces_i)
-    mesh_l = _make_pv_mesh(verts_l, faces_l, esp_verts_l, esp_faces_l)
+    mesh = _make_pv_mesh(verts, faces, esp_verts, esp_faces)
 
-    plotter = pv.Plotter(shape=(1, 2), window_size=(1400, 600))
+    plotter = pv.Plotter(window_size=(900, 700))
+    plotter.add_text(
+        f"{protein_id}  ({len(verts):,} verts)",
+        position="upper_edge", font_size=11,
+    )
+    plotter.add_mesh(
+        mesh,
+        scalars="esp_verts",
+        preference="point",
+        cmap="coolwarm_r",
+        clim=clim,
+        show_edges=False,
+    )
+    plotter.add_scalar_bar(title="ESP (kT/e)", n_labels=5)
 
-    def _add_panel(col: int, mesh: pv.PolyData, title: str) -> None:
-        plotter.subplot(0, col)
-        plotter.add_text(title, position="upper_edge", font_size=11)
-        plotter.add_mesh(
-            mesh,
-            scalars="esp_verts",
-            preference="point",
-            cmap="coolwarm_r",
-            clim=clim,
-            show_edges=False,
-        )
-        plotter.add_scalar_bar(title="ESP (kT/e)", n_labels=5)
-
-    _add_panel(0, mesh_i, f"Interpolated ({len(verts_i):,} verts)")
-    _add_panel(1, mesh_l, f"Laplacian  r={r_pqr:.3f}  RMSE={rmse_pqr:.3f}")
-
-    plotter.link_views()
     plog.info("Launching PyVista viewer for %s", protein_id)
     plotter.show()

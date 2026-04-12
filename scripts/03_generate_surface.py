@@ -40,8 +40,8 @@ def main():
     for protein_id in protein_ids:
         p = ProteinPaths(protein_id, data_root)
 
-        if p.pqr_mesh_path.exists():
-            log.info("[%s] PQR mesh exists — skipping", protein_id)
+        if p.mesh_path.exists():
+            log.info("[%s] Mesh exists — skipping", protein_id)
             notify(protein_id, "skipped", "surface generation")
             continue
 

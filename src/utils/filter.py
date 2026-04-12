@@ -169,9 +169,9 @@ def _passes_filters(
 
     # ── Surface area ──────────────────────────────────────────────────────────
     if min_surface_area is not None or max_surface_area is not None:
-        area = meta.get("ses_area_pdb")
+        area = meta.get("ses_area")
         if area is None:
-            log.warning("[%s] Missing ses_area_pdb — skipping", protein_id)
+            log.warning("[%s] Missing ses_area — skipping", protein_id)
             return False
         if min_surface_area is not None and area < min_surface_area:
             return False

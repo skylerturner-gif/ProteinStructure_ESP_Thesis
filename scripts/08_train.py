@@ -71,11 +71,6 @@ def main() -> None:
         "--model", choices=["distance", "attention"], required=True,
         help="Model architecture to train.",
     )
-    parser.add_argument(
-        "--variant", choices=["interp", "laplacian"], default="interp",
-        help="ESP target variant (default: interp).",
-    )
-
     # ── Architecture ──────────────────────────────────────────────────────────
     parser.add_argument("--hidden-dim",        type=int,   default=128)
     parser.add_argument("--n-rbf",             type=int,   default=16)
@@ -127,7 +122,7 @@ def main() -> None:
     log       = get_pipeline_logger(Path(cfg["paths"]["log_file"]))
 
     ckpt_dir = args.checkpoint_dir or (
-        Path(data_root).parent / "checkpoints" / f"{args.model}_{args.variant}"
+        Path(data_root).parent / "checkpoints" / args.model
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -142,7 +137,6 @@ def main() -> None:
     print(f"Proteins selected: {len(protein_ids)}")
 
     graph_kwargs = dict(
-        variant     = args.variant,
         sample_frac = args.sample_frac,
         rebuild     = args.rebuild_graphs,
     )
@@ -220,7 +214,6 @@ def main() -> None:
         clip_grad_norm = args.clip_grad,
         extra_state    = {
             "model_name":   args.model,
-            "variant":      args.variant,
             "esp_mean":     esp_mean,
             "esp_std":      esp_std,
             "model_config": {
@@ -235,8 +228,8 @@ def main() -> None:
     )
 
     log.info(
-        "Training %s (variant=%s) on %d proteins for %d epochs",
-        args.model, args.variant, len(protein_ids), args.epochs,
+        "Training %s on %d proteins for %d epochs",
+        args.model, len(protein_ids), args.epochs,
     )
 
     trainer.fit(train_loader, val_loader, n_epochs=args.epochs)

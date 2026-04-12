@@ -12,8 +12,8 @@ Directory structure per protein:
     └── <protein_id>/
         ├── structure/          .cif, .pqr, .in, _pae.json
         ├── electrostatics/     .dx, APBS output files
-        ├── mesh/               _pqr_mesh.npz, .vtk file
-        ├── esp/                _pqr_mesh_interp.npz
+        ├── mesh/               _mesh.npz, _mesh.vtk
+        ├── esp/                _esp.npz
         ├── logs/               <protein_id>.log
         └── <protein_id>_metadata.json
 
@@ -21,8 +21,8 @@ Usage:
     from src.utils.paths import ProteinPaths
     p = ProteinPaths("AF-Q16613-F1", data_root)
 
-    p.pqr_mesh_path     # mesh/AF-Q16613-F1_pqr_mesh.npz
-    p.pqr_interp_path   # esp/AF-Q16613-F1_pqr_mesh_interp.npz
+    p.mesh_path   # mesh/AF-Q16613-F1_mesh.npz
+    p.esp_path    # esp/AF-Q16613-F1_esp.npz
     p.ensure_dirs()     # create all subdirectories
 """
 
@@ -69,19 +69,19 @@ class ProteinPaths:
         # dx_stem is passed to APBS — it appends .dx automatically
         self.dx_stem        = self.electrostatics_dir / protein_id
 
-        # ── Mesh files (PQR only) ─────────────────────────────────────────────
-        self.pqr_mesh_path  = self.mesh_dir / f"{protein_id}_pqr_mesh.npz"
-        self.pqr_vtk_path   = self.mesh_dir / f"{protein_id}_pqr_mesh.vtk"
+        # ── Mesh files ────────────────────────────────────────────────────────
+        self.mesh_path  = self.mesh_dir / f"{protein_id}_mesh.npz"
+        self.vtk_path   = self.mesh_dir / f"{protein_id}_mesh.vtk"
 
         # ── ESP sampled files ─────────────────────────────────────────────────
-        self.pqr_interp_path = self.esp_dir / f"{protein_id}_pqr_mesh_interp.npz"
+        self.esp_path = self.esp_dir / f"{protein_id}_esp.npz"
 
         # ── Graph cache files ─────────────────────────────────────────────────
         self.graph_dir = self.protein_dir / "graph"
 
-    def graph_path(self, variant: str = "interp") -> Path:
-        """Path to the cached PyG HeteroData graph for the given ESP variant."""
-        return self.graph_dir / f"{self.protein_id}_graph_{variant}.pt"
+    def graph_path(self) -> Path:
+        """Path to the cached PyG HeteroData graph."""
+        return self.graph_dir / f"{self.protein_id}_graph.pt"
 
     def ensure_dirs(self) -> None:
         """Create all protein subdirectories. Safe to call if they exist."""
@@ -96,14 +96,14 @@ class ProteinPaths:
         ]:
             d.mkdir(parents=True, exist_ok=True)
 
-    def all_sampled_exist(self) -> bool:
-        """Return True if the PQR ESP sampled output file exists."""
-        return self.pqr_interp_path.exists()
+    def esp_exists(self) -> bool:
+        """Return True if the ESP sampled output file exists."""
+        return self.esp_path.exists()
 
     def is_evaluated(self) -> bool:
         """
         Return True if ESP evaluation metrics have been written to metadata.
-        Checks for pearson_r_pqr key in the metadata JSON.
+        Checks for pearson_r key in the metadata JSON.
         Returns False if metadata does not exist or is missing the key.
         """
         if not self.metadata_path.exists():
@@ -111,7 +111,7 @@ class ProteinPaths:
         try:
             import json
             meta = json.loads(self.metadata_path.read_text())
-            return "pearson_r_pqr" in meta
+            return "pearson_r" in meta
         except Exception:
             return False
 

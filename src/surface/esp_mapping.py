@@ -8,7 +8,7 @@ then trilinearly interpolates ESP onto all surface vertices.  The result
 is the ground-truth label file used during training and evaluation.
 
 Output:
-    {id}_pqr_mesh_interp.npz  — ESP at all vertices (kT/e), saved to esp/
+    {id}_esp.npz  — ESP at all vertices (kT/e), saved to esp/
 
 Curvature-prioritised vertex sampling (curvature_sampling) is also exported
 from this module — it is called by src.data.graph_builder to select the 5%
@@ -288,12 +288,12 @@ def sample_esp(
     Trilinearly interpolate APBS ESP onto all PQR mesh vertices.
 
     Expects:
-        <data_root>/<protein_id>/mesh/<protein_id>_pqr_mesh.npz
+        <data_root>/<protein_id>/mesh/<protein_id>_mesh.npz
         Either grid_data=(axes, grid) passed in-memory, or
         <data_root>/<protein_id>/electrostatics/<protein_id>.dx on disk.
 
     Produces:
-        <data_root>/<protein_id>/esp/<protein_id>_pqr_mesh_interp.npz
+        <data_root>/<protein_id>/esp/<protein_id>_esp.npz
             — ESP at every vertex and face (kT/e), used as training labels
               and evaluation ground truth.
 
@@ -313,8 +313,8 @@ def sample_esp(
     p    = ProteinPaths(protein_id, data_root)
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
 
-    if not p.pqr_mesh_path.exists():
-        plog.error("Missing input file: %s", p.pqr_mesh_path)
+    if not p.mesh_path.exists():
+        plog.error("Missing input file: %s", p.mesh_path)
         return False
 
     if grid_data is None:
@@ -325,11 +325,11 @@ def sample_esp(
     normal_offset = get_config()["esp_mapping"]["normal_offset"]
     plog.info("── ESP sampling  normal_offset=%.2f Å ──", normal_offset)
 
-    mesh_data = np.load(p.pqr_mesh_path)
+    mesh_data = np.load(p.mesh_path)
     verts     = mesh_data["verts"]
     normals   = mesh_data["normals"]
     faces     = mesh_data["faces"]
-    plog.info("Loaded PQR mesh: %d verts, %d faces", len(verts), len(faces))
+    plog.info("Loaded mesh: %d verts, %d faces", len(verts), len(faces))
 
     axes, grid = grid_data if grid_data is not None else read_dx(p.dx_path)
     sample_pts = offset_points(verts, normals, normal_offset)
@@ -337,8 +337,8 @@ def sample_esp(
     with timer() as t:
         esp_verts = trilinear_esp(axes, grid, sample_pts)
         esp_faces = interpolate_faces_from_verts(faces, esp_verts)
-        _save_npz(p.pqr_interp_path, verts, faces, esp_verts, esp_faces)
-        plog.info("Interp ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
+        _save_npz(p.esp_path, verts, faces, esp_verts, esp_faces)
+        plog.info("ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
                   esp_verts.min(), esp_verts.max(),
                   esp_faces.min(), esp_faces.max())
 

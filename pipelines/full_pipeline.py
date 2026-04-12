@@ -72,7 +72,7 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool =
         #   keep_dx=True  → skip if .dx already on disk
         #   keep_dx=False → skip if final sampled output already exists
         apbs_already_done = (
-            p.dx_path.exists() if keep_dx else p.all_sampled_exist()
+            p.dx_path.exists() if keep_dx else p.esp_exists()
         )
         if apbs_already_done:
             step_results["apbs"] = "skipped"
@@ -87,28 +87,28 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool =
                 step_results["apbs"] = "success"
                 grid_data = result  # pass to sample_esp below
 
-        # ── Step 4: PQR mesh generation ───────────────────────────────────────
-        if p.pqr_mesh_path.exists():
-            step_results["mesh_pqr"] = "skipped"
+        # ── Step 4: Mesh generation ───────────────────────────────────────────
+        if p.mesh_path.exists():
+            step_results["mesh"] = "skipped"
         elif not p.pqr_path.exists():
             plog.error("[%s] Step 4: PQR missing", protein_id)
-            step_results["mesh_pqr"] = "failed"
+            step_results["mesh"] = "failed"
         else:
             try:
                 build_mesh(p.pqr_path, protein_id, data_root)
-                step_results["mesh_pqr"] = "success"
+                step_results["mesh"] = "success"
             except Exception as e:
-                plog.error("[%s] Step 4 PQR mesh failed: %s", protein_id, e)
-                step_results["mesh_pqr"] = "failed"
+                plog.error("[%s] Step 4 mesh failed: %s", protein_id, e)
+                step_results["mesh"] = "failed"
 
         # ── Step 5: ESP sampling ──────────────────────────────────────────────
         # Skip if final output already exists AND no fresh grid in memory.
-        if p.all_sampled_exist() and grid_data is None:
+        if p.esp_exists() and grid_data is None:
             step_results["esp_sampling"] = "skipped"
-        elif step_results.get("apbs") == "skipped" and p.all_sampled_exist():
+        elif step_results.get("apbs") == "skipped" and p.esp_exists():
             step_results["esp_sampling"] = "skipped"
-        elif not p.pqr_mesh_path.exists():
-            plog.error("[%s] Step 5: PQR mesh missing", protein_id)
+        elif not p.mesh_path.exists():
+            plog.error("[%s] Step 5: mesh missing", protein_id)
             step_results["esp_sampling"] = "failed"
         elif grid_data is None and not p.dx_path.exists():
             plog.error("[%s] Step 5: no grid in memory and no .dx on disk", protein_id)
@@ -120,8 +120,8 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool =
         # ── Step 6: Evaluate ──────────────────────────────────────────────────
         if p.is_evaluated():
             step_results["evaluate"] = "skipped"
-        elif not p.all_sampled_exist():
-            plog.error("[%s] Step 6: sampled files missing", protein_id)
+        elif not p.esp_exists():
+            plog.error("[%s] Step 6: ESP file missing", protein_id)
             step_results["evaluate"] = "failed"
         else:
             try:
@@ -171,7 +171,7 @@ def _run_protein_worker(protein_id: str, data_root_str: str, keep_dx: bool) -> t
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _log_summary(all_results: dict, log) -> None:
-    steps = ["pdb2pqr", "apbs", "mesh_pqr", "esp_sampling", "evaluate"]
+    steps = ["pdb2pqr", "apbs", "mesh", "esp_sampling", "evaluate"]
     log.info("═" * 70)
     log.info("PIPELINE SUMMARY")
     log.info("═" * 70)
@@ -266,7 +266,7 @@ def main():
                         log.error("[%s] Worker exception: %s", protein_id, outcome)
                         all_results[protein_id] = {}
                         continue
-                    _, step_results = outcome
+                    _, step_results = outcome  # outcome = (protein_id, step_results) from worker
                     all_results[protein_id] = step_results
                     try:
                         update_metadata(protein_id, data_root=data_root, data={

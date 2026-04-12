@@ -4,7 +4,7 @@ scripts/07_build_graphs.py
 Pre-build and cache PyG HeteroData graphs for all proteins.
 
 Each graph is saved as a .pt file to:
-    <data_root>/<protein_id>/graph/<protein_id>_graph_interp.pt
+    <data_root>/<protein_id>/graph/<protein_id>_graph.pt
 
 Graph node/edge counts are written to the protein metadata JSON so that
 DynamicBatchSampler can bin proteins by total edge budget without loading
@@ -45,13 +45,13 @@ def _build_one(
     Returns "ok", "skip", or "fail".
     """
     p = ProteinPaths(protein_id, data_root)
-    graph_path = p.graph_path("interp")
+    graph_path = p.graph_path()
 
     if graph_path.exists() and not force:
         log.info("[%s] Graph cached — skipping", protein_id)
         return "skip"
 
-    missing = [f for f in [p.pqr_path, p.pqr_mesh_path, p.pqr_interp_path] if not f.exists()]
+    missing = [f for f in [p.pqr_path, p.mesh_path, p.esp_path] if not f.exists()]
     if missing:
         for f in missing:
             log.error("[%s] Missing input: %s", protein_id, f.name)
@@ -168,7 +168,7 @@ def main() -> None:
                 notify(protein_id, "failed", f"graph build exception: {outcome}")
                 log.error("[%s] Worker exception: %s", protein_id, outcome)
                 continue
-            _, status = outcome
+            _, status = outcome  # outcome = (protein_id, status) from worker
             if status == "ok":
                 n_ok   += 1; notify(protein_id, "complete", "graph build")
             elif status == "skip":

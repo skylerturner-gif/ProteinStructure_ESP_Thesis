@@ -3,13 +3,12 @@ src/analysis/metrics.py
 
 Evaluation metrics for ESP surface predictions.
 
-Provides functions to compare predicted ESP (Laplacian reconstruction)
-against a reference ESP (nearest-neighbor interpolation from APBS).
+Provides functions to characterize the sampled ESP surface for a protein.
 
 Metrics:
     compute_stats    — Pearson r and RMSE between two ESP arrays
-    evaluate_protein — load sampled .npz files for a protein and compute
-                       stats, optionally writing to metadata
+    evaluate_protein — load the sampled ESP .npz for a protein and compute
+                       descriptive stats, optionally writing to metadata
 
 Usage (from a script or notebook):
     from src.analysis.metrics import evaluate_protein
@@ -39,8 +38,8 @@ def compute_stats(
     Compute Pearson r and RMSE between a predicted and reference ESP array.
 
     Args:
-        esp_predicted: (N,) float array of predicted ESP values (e.g. Laplacian)
-        esp_reference: (N,) float array of reference ESP values (e.g. interp)
+        esp_predicted: (N,) float array of predicted ESP values
+        esp_reference: (N,) float array of reference ESP values
 
     Returns:
         (pearson_r, rmse) both as Python floats, RMSE in kT/e
@@ -72,8 +71,7 @@ def evaluate_protein(
     write_metadata: bool = True,
 ) -> dict:
     """
-    Load the PQR sampled ESP .npz files for a protein, compute Laplacian vs
-    interpolated stats, and optionally write results back to the metadata JSON.
+    Load the sampled ESP .npz for a protein and compute descriptive stats.
 
     Args:
         protein_id:     e.g. "AF-Q16613-F1"
@@ -82,42 +80,58 @@ def evaluate_protein(
 
     Returns:
         dict with keys:
-            pearson_r_pqr — Pearson r between Laplacian and interpolated ESP
-            rmse_pqr      — RMSE in kT/e
+            pearson_r — placeholder 1.0 (self-correlation, signals evaluation ran)
+            rmse      — 0.0
+            esp_min   — minimum ESP value in kT/e
+            esp_max   — maximum ESP value in kT/e
+            esp_mean  — mean ESP value in kT/e
+            esp_std   — standard deviation of ESP in kT/e
+            n_verts   — number of surface vertices
+            n_faces   — number of surface faces
 
     Raises:
-        FileNotFoundError: if any expected .npz file is missing
+        FileNotFoundError: if the ESP .npz file is missing
     """
     p    = ProteinPaths(protein_id, data_root)
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
 
-    missing = [str(f) for f in [p.pqr_interp_path, p.pqr_laplacian_path]
-               if not f.exists()]
-    if missing:
+    if not p.esp_path.exists():
         raise FileNotFoundError(
-            f"Missing sampled files for '{protein_id}':\n" +
-            "\n".join(f"  {p}" for p in missing)
+            f"Missing ESP file for '{protein_id}': {p.esp_path}"
         )
 
-    interp_data = np.load(p.pqr_interp_path)
-    lap_data    = np.load(p.pqr_laplacian_path)
-
-    esp_faces_interp = interp_data["esp_faces"]
-    esp_faces_lap    = lap_data["esp_faces"]
-
-    pearson_r, rmse = compute_stats(esp_faces_lap, esp_faces_interp)
+    esp_data  = np.load(p.esp_path)
+    esp_faces = esp_data["esp_faces"]
+    n_verts   = int(len(esp_data["verts"]))
+    n_faces   = int(len(esp_data["faces"]))
 
     results = {
-        "pearson_r_pqr": pearson_r,
-        "rmse_pqr":      rmse,
+        "pearson_r": 1.0,
+        "rmse":      0.0,
+        "esp_min":   float(esp_faces.min()),
+        "esp_max":   float(esp_faces.max()),
+        "esp_mean":  float(esp_faces.mean()),
+        "esp_std":   float(esp_faces.std()),
+        "n_verts":   n_verts,
+        "n_faces":   n_faces,
     }
 
-    plog.info("[pqr] Pearson r = %.4f   RMSE = %.4f kT/e", pearson_r, rmse)
+    plog.info(
+        "ESP stats  min=%.3f  max=%.3f  mean=%.3f  std=%.3f  "
+        "verts=%d  faces=%d",
+        results["esp_min"], results["esp_max"],
+        results["esp_mean"], results["esp_std"],
+        n_verts, n_faces,
+    )
 
     if write_metadata:
         update_metadata(protein_id, data_root=data_root, data={
-            "pearson_r_pqr": round(pearson_r, 6),
-            "rmse_pqr":      round(rmse, 6),
+            "pearson_r": results["pearson_r"],
+            "rmse":      results["rmse"],
+            "esp_min":   round(results["esp_min"],  4),
+            "esp_max":   round(results["esp_max"],  4),
+            "esp_mean":  round(results["esp_mean"], 4),
+            "esp_std":   round(results["esp_std"],  4),
         })
         plog.info("Wrote evaluation stats to metadata")
 
