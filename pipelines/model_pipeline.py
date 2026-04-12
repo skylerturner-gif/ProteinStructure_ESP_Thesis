@@ -157,7 +157,7 @@ def main() -> None:
                 "--n-qq-rounds",         str(model_cfg.get("n_qq_rounds",          2)),
                 "--sample-frac",         str(train_cfg.get("sample_frac",          0.05)),
                 "--epochs",              str(args.epochs or train_cfg.get("epochs", 100)),
-                "--max-edges-per-batch", str(train_cfg.get("max_edges_per_batch",  1_000_000)),
+                "--max-edges-per-batch", str(train_cfg.get("max_edges_per_batch",  2_000_000)),
                 "--lr",                  str(train_cfg.get("lr",                   3e-4)),
                 "--weight-decay",        str(train_cfg.get("weight_decay",         1e-4)),
                 "--pearson-weight",      str(train_cfg.get("pearson_weight",       0.1)),
