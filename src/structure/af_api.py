@@ -12,8 +12,7 @@ API endpoint:
     GET https://alphafold.ebi.ac.uk/api/prediction/{uniprot_id}
 
 Downloads per fragment (e.g. F1, F2, ...):
-    {protein_id}.cif       — mmCIF structure file
-    {protein_id}.pdb       — PDB format (converted from mmCIF via gemmi)
+    {protein_id}.cif       — mmCIF structure file (canonical structure)
     {protein_id}_pae.json  — predicted aligned error matrix (from API)
 
 Metadata fields created:
@@ -40,7 +39,6 @@ import json
 import time
 from pathlib import Path
 
-import gemmi
 import numpy as np
 import requests
 
@@ -138,24 +136,6 @@ def _download_file(url: str, dest: Path, plog) -> bool:
         return False
 
 
-# ── mmCIF → PDB conversion ────────────────────────────────────────────────────
-
-def _convert_cif_to_pdb(cif_path: Path, pdb_path: Path, plog) -> bool:
-    """
-    Convert a mmCIF structure file to PDB format using gemmi.
-
-    Returns:
-        True on success, False on failure.
-    """
-    try:
-        structure = gemmi.read_structure(str(cif_path))
-        structure.write_pdb(str(pdb_path))
-        plog.info("Converted CIF → PDB: %s", pdb_path.name)
-        return True
-    except Exception as e:
-        plog.error("CIF to PDB conversion failed: %s", e)
-        return False
-
 
 # ── pLDDT extraction ──────────────────────────────────────────────────────────
 
@@ -241,10 +221,6 @@ def _download_fragment(api_entry: dict, data_root: Path) -> bool:
         return False
 
     if not _download_file(cif_url, p.cif_path, plog):
-        return False
-
-    # Convert to PDB
-    if not _convert_cif_to_pdb(p.cif_path, p.pdb_path, plog):
         return False
 
     # Download PAE JSON
