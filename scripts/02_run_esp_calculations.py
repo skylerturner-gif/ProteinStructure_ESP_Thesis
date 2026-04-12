@@ -25,6 +25,11 @@ def main():
         description="Run PDB2PQR and APBS for a filtered set of proteins."
     )
     parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument(
+        "--keep-dx", action="store_true", default=False,
+        help="Write the APBS .dx file permanently to <protein>/electrostatics/. "
+             "By default the .dx is processed in memory and never saved to disk.",
+    )
     add_filter_args(parser)
     args = parser.parse_args()
 
@@ -36,18 +41,18 @@ def main():
         log.warning("No proteins selected. Exiting.")
         return
 
-    log.info("ESP calculations for %d proteins", len(protein_ids))
+    log.info("ESP calculations for %d proteins  keep_dx=%s", len(protein_ids), args.keep_dx)
 
     for protein_id in protein_ids:
-        p          = ProteinPaths(protein_id, data_root)
-        protein_ok = True
+        p           = ProteinPaths(protein_id, data_root)
+        protein_ok  = True
         failed_step = ""
 
         if p.pqr_path.exists():
             log.info("[%s] PQR exists — skipping PDB2PQR", protein_id)
-        elif not p.pdb_path.exists():
-            log.error("[%s] PDB missing — skipping", protein_id)
-            notify(protein_id, "failed", "pdb missing")
+        elif not p.cif_path.exists():
+            log.error("[%s] CIF missing — skipping", protein_id)
+            notify(protein_id, "failed", "cif missing")
             continue
         else:
             ok = process_pdb2pqr(protein_id, data_root)
@@ -56,11 +61,13 @@ def main():
                 failed_step = "pdb2pqr"
 
         if protein_ok:
-            if p.dx_path.exists():
+            # When keep_dx=True, skip if .dx already on disk.
+            # When keep_dx=False, APBS result is in-memory only — no skip check.
+            if args.keep_dx and p.dx_path.exists():
                 log.info("[%s] DX exists — skipping APBS", protein_id)
             else:
-                ok = process_apbs(protein_id, data_root)
-                if not ok:
+                result = process_apbs(protein_id, data_root, keep_dx=args.keep_dx)
+                if result is None:
                     protein_ok  = False
                     failed_step = "apbs"
 

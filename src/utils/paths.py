@@ -10,7 +10,7 @@ import from this module instead.
 Directory structure per protein:
     <data_root>/
     └── <protein_id>/
-        ├── structure/          .cif, .pdb, .pqr, .in, _pdb2pqr.pdb
+        ├── structure/          .cif, .pqr, .in, _pae.json
         ├── electrostatics/     .dx, APBS output files
         ├── mesh/               _pqr_mesh.npz, .vtk file
         ├── esp/                _pqr_mesh_interp.npz
@@ -59,12 +59,10 @@ class ProteinPaths:
         self.log_path = self.logs_dir / f"{protein_id}.log"
 
         # ── Structure files ───────────────────────────────────────────────────
-        self.cif_path       = self.structure_dir / f"{protein_id}.cif"
-        self.pdb_path       = self.structure_dir / f"{protein_id}.pdb"
-        self.pqr_path       = self.structure_dir / f"{protein_id}.pqr"
-        self.pdb2pqr_path   = self.structure_dir / f"{protein_id}_pdb2pqr.pdb"
-        self.apbs_in_path   = self.structure_dir / f"{protein_id}.in"
-        self.pae_path       = self.structure_dir / f"{protein_id}_pae.json"
+        self.cif_path     = self.structure_dir / f"{protein_id}.cif"
+        self.pqr_path     = self.structure_dir / f"{protein_id}.pqr"
+        self.apbs_in_path = self.structure_dir / f"{protein_id}.in"
+        self.pae_path     = self.structure_dir / f"{protein_id}_pae.json"
 
         # ── Electrostatics files ──────────────────────────────────────────────
         self.dx_path        = self.electrostatics_dir / f"{protein_id}.dx"

@@ -278,13 +278,19 @@ def _save_npz(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def sample_esp(protein_id: str, data_root: Path) -> bool:
+def sample_esp(
+    protein_id: str,
+    data_root: Path,
+    *,
+    grid_data: tuple | None = None,
+) -> bool:
     """
     Trilinearly interpolate APBS ESP onto all PQR mesh vertices.
 
     Expects:
         <data_root>/<protein_id>/mesh/<protein_id>_pqr_mesh.npz
-        <data_root>/<protein_id>/electrostatics/<protein_id>.dx
+        Either grid_data=(axes, grid) passed in-memory, or
+        <data_root>/<protein_id>/electrostatics/<protein_id>.dx on disk.
 
     Produces:
         <data_root>/<protein_id>/esp/<protein_id>_pqr_mesh_interp.npz
@@ -297,6 +303,9 @@ def sample_esp(protein_id: str, data_root: Path) -> bool:
     Args:
         protein_id: e.g. "AF-Q16613-F1"
         data_root:  root of the external data directory
+        grid_data:  optional (axes, grid) tuple returned by process_apbs.
+                    When provided the .dx file is not read from disk.
+                    When None (default), reads from p.dx_path.
 
     Returns:
         True on success, False if any required input file is missing.
@@ -304,11 +313,14 @@ def sample_esp(protein_id: str, data_root: Path) -> bool:
     p    = ProteinPaths(protein_id, data_root)
     plog = get_logger(f"protein.{protein_id}", log_file=p.log_path)
 
-    missing = [f for f in [p.pqr_mesh_path, p.dx_path] if not f.exists()]
-    if missing:
-        for f in missing:
-            plog.error("Missing input file: %s", f)
+    if not p.pqr_mesh_path.exists():
+        plog.error("Missing input file: %s", p.pqr_mesh_path)
         return False
+
+    if grid_data is None:
+        if not p.dx_path.exists():
+            plog.error("Missing .dx file and no grid_data supplied: %s", p.dx_path)
+            return False
 
     normal_offset = get_config()["esp_mapping"]["normal_offset"]
     plog.info("── ESP sampling  normal_offset=%.2f Å ──", normal_offset)
@@ -319,7 +331,7 @@ def sample_esp(protein_id: str, data_root: Path) -> bool:
     faces     = mesh_data["faces"]
     plog.info("Loaded PQR mesh: %d verts, %d faces", len(verts), len(faces))
 
-    axes, grid = read_dx(p.dx_path)
+    axes, grid = grid_data if grid_data is not None else read_dx(p.dx_path)
     sample_pts = offset_points(verts, normals, normal_offset)
 
     with timer() as t:

@@ -39,38 +39,53 @@ from src.utils.paths import ProteinPaths
 
 # ── Per-protein pipeline ──────────────────────────────────────────────────────
 
-def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
+def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool = False) -> dict:
     """
     Run all pipeline steps for a single protein fragment.
     All detailed logging goes to the per-protein log file.
     Returns a dict mapping step name to 'success', 'skipped', or 'failed'.
+
+    Args:
+        keep_dx: if True, write the APBS .dx file permanently to disk.
+                 if False (default), process the ESP grid in memory only.
     """
     p    = ProteinPaths(protein_id, data_root)
     plog = pipeline_log
 
     step_results = {}
+    grid_data    = None   # (axes, grid) from APBS — threaded to sample_esp
 
     with timer() as t_total:
 
         # ── Step 2: PDB2PQR ───────────────────────────────────────────────────
         if p.pqr_path.exists():
             step_results["pdb2pqr"] = "skipped"
-        elif not p.pdb_path.exists():
-            plog.error("[%s] Step 2: PDB missing", protein_id)
+        elif not p.cif_path.exists():
+            plog.error("[%s] Step 2: CIF missing", protein_id)
             step_results["pdb2pqr"] = "failed"
         else:
             ok = process_pdb2pqr(protein_id, data_root)
             step_results["pdb2pqr"] = "success" if ok else "failed"
 
         # ── Step 3: APBS ─────────────────────────────────────────────────────
-        if p.dx_path.exists():
+        # Skip condition depends on keep_dx:
+        #   keep_dx=True  → skip if .dx already on disk
+        #   keep_dx=False → skip if final sampled output already exists
+        apbs_already_done = (
+            p.dx_path.exists() if keep_dx else p.all_sampled_exist()
+        )
+        if apbs_already_done:
             step_results["apbs"] = "skipped"
         elif not p.pqr_path.exists():
             plog.error("[%s] Step 3: PQR missing", protein_id)
             step_results["apbs"] = "failed"
         else:
-            ok = process_apbs(protein_id, data_root)
-            step_results["apbs"] = "success" if ok else "failed"
+            result = process_apbs(protein_id, data_root, keep_dx=keep_dx)
+            if result is None:
+                step_results["apbs"] = "failed"
+            else:
+                step_results["apbs"] = "success"
+                grid_data = result  # pass to sample_esp below
 
         # ── Step 4: PQR mesh generation ───────────────────────────────────────
         if p.pqr_mesh_path.exists():
@@ -87,13 +102,19 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
                 step_results["mesh_pqr"] = "failed"
 
         # ── Step 5: ESP sampling ──────────────────────────────────────────────
-        if p.all_sampled_exist():
+        # Skip if final output already exists AND no fresh grid in memory.
+        if p.all_sampled_exist() and grid_data is None:
             step_results["esp_sampling"] = "skipped"
-        elif not p.pqr_mesh_path.exists() or not p.dx_path.exists():
-            plog.error("[%s] Step 5: missing PQR mesh or DX", protein_id)
+        elif step_results.get("apbs") == "skipped" and p.all_sampled_exist():
+            step_results["esp_sampling"] = "skipped"
+        elif not p.pqr_mesh_path.exists():
+            plog.error("[%s] Step 5: PQR mesh missing", protein_id)
+            step_results["esp_sampling"] = "failed"
+        elif grid_data is None and not p.dx_path.exists():
+            plog.error("[%s] Step 5: no grid in memory and no .dx on disk", protein_id)
             step_results["esp_sampling"] = "failed"
         else:
-            ok = sample_esp(protein_id, data_root)
+            ok = sample_esp(protein_id, data_root, grid_data=grid_data)
             step_results["esp_sampling"] = "success" if ok else "failed"
 
         # ── Step 6: Evaluate ──────────────────────────────────────────────────
@@ -128,7 +149,7 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log) -> dict:
     return step_results
 
 
-def _run_protein_worker(protein_id: str, data_root_str: str) -> tuple[str, dict]:
+def _run_protein_worker(protein_id: str, data_root_str: str, keep_dx: bool) -> tuple[str, dict]:
     """
     Process-pool-safe wrapper around _run_protein.
 
@@ -143,7 +164,7 @@ def _run_protein_worker(protein_id: str, data_root_str: str) -> tuple[str, dict]
 
     data_root = Path(data_root_str)
     log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
-    steps     = _run_protein(protein_id, data_root, log)
+    steps     = _run_protein(protein_id, data_root, log, keep_dx=keep_dx)
     return protein_id, steps
 
 
@@ -177,6 +198,11 @@ def main():
         "--workers", type=int, default=1,
         help="Number of parallel worker processes for the per-protein pipeline "
              "(default: 1). Set >1 to process multiple proteins concurrently.",
+    )
+    parser.add_argument(
+        "--keep-dx", action="store_true", default=False,
+        help="Write the APBS .dx file permanently to <protein>/electrostatics/. "
+             "By default the .dx is processed in memory and never saved to disk.",
     )
     args = parser.parse_args()
 
@@ -219,7 +245,7 @@ def main():
             # ── Steps 2-6: Run pipeline for each fragment ─────────────────────
             if args.workers == 1:
                 for protein_id in protein_ids:
-                    step_results = _run_protein(protein_id, data_root, log)
+                    step_results = _run_protein(protein_id, data_root, log, keep_dx=args.keep_dx)
                     all_results[protein_id] = step_results
                     try:
                         update_metadata(protein_id, data_root=data_root, data={
@@ -231,7 +257,7 @@ def main():
             else:
                 parallel_results = run_parallel(
                     _run_protein_worker,
-                    [(pid, str(data_root)) for pid in protein_ids],
+                    [(pid, str(data_root), args.keep_dx) for pid in protein_ids],
                     n_workers=args.workers,
                     label=f"proteins (workers={args.workers})",
                 )
