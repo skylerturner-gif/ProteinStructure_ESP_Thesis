@@ -241,6 +241,44 @@ def main() -> None:
 
     trainer.fit(train_loader, val_loader, n_epochs=args.epochs)
 
+    # ── Test evaluation ───────────────────────────────────────────────────────
+    if len(test_ds) == 0:
+        print("\nNo test proteins — skipping test evaluation.")
+    else:
+        print(f"\nEvaluating on {len(test_ds)} test proteins...")
+        Trainer.load_checkpoint(ckpt_dir / "best_model.pt", model)
+
+        pred_dir = ckpt_dir / "test_predictions"
+        results  = trainer.evaluate_test(test_ds, predictions_dir=pred_dir)
+
+        g = results["global"]
+        print(
+            f"\nTest results  (best checkpoint, {g['n_proteins']} proteins)\n"
+            f"  Loss:      {g['loss']:.4f}\n"
+            f"  RMSE:      {g['rmse']:.4f} kT/e\n"
+            f"  MAE:       {g['mae']:.4f} kT/e\n"
+            f"  Pearson r: {g['pearson_r']:.4f}\n"
+        )
+
+        # Per-protein summary: sort by Pearson r ascending so worst are first
+        pp = results["per_protein"]
+        ranked = sorted(pp.items(), key=lambda kv: kv[1]["pearson_r"])
+        print(f"{'Protein':<30}  {'Pearson r':>10}  {'RMSE':>10}  {'MAE':>10}")
+        print("-" * 66)
+        for pid, m in ranked:
+            print(
+                f"{pid:<30}  {m['pearson_r']:>10.4f}  "
+                f"{m['rmse']:>10.4f}  {m['mae']:>10.4f}"
+            )
+        print(f"\nPredictions saved to: {pred_dir}")
+        print(f"Per-protein metrics:  {ckpt_dir / 'test_metrics.json'}")
+        print(f"Training history:     {ckpt_dir / 'metrics.csv'}")
+
+        log.info(
+            "Test complete — loss=%.4f  rmse=%.4f  pearson_r=%.4f",
+            g["loss"], g["rmse"], g["pearson_r"],
+        )
+
 
 if __name__ == "__main__":
     main()
