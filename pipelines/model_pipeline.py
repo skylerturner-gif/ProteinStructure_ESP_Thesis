@@ -64,9 +64,16 @@ def _collect_filter_args(args) -> list[str]:
     return out
 
 
-def _run_script(script: str, extra_args: list[str]) -> bool:
+def _run_script(script: str, extra_args: list[str], nproc: int = 1) -> bool:
     """Run a script in the current Python interpreter. Returns True on success."""
-    cmd = [sys.executable, str(_PROJECT_ROOT / script)] + extra_args
+    if nproc > 1:
+        cmd = [
+            sys.executable, "-m", "torch.distributed.run",
+            f"--nproc_per_node={nproc}",
+            str(_PROJECT_ROOT / script),
+        ] + extra_args
+    else:
+        cmd = [sys.executable, str(_PROJECT_ROOT / script)] + extra_args
     result = subprocess.run(cmd, check=False)
     return result.returncode == 0
 
@@ -98,15 +105,18 @@ def main() -> None:
 
     # ── Key training overrides ────────────────────────────────────────────────
     parser.add_argument("--model",  type=str,  default=None,
-                        choices=["distance", "attention"],
-                        help="Model type. Overrides config model.type.")
+                        choices=["distance", "attention", "both"],
+                        help="Model type. Use 'both' to train distance then attention "
+                             "sequentially. Overrides config model.type.")
     parser.add_argument("--epochs", type=int,  default=None,
                         help="Training epochs. Overrides config training.epochs.")
     parser.add_argument("--checkpoint-dir", type=Path, default=None,
                         help="Directory for checkpoints. "
-                             "Defaults to <data_root>/../checkpoints/<model>.")
+                             "Defaults to <data_root>/../checkpoints/<model>. "
+                             "Ignored when --model both (each model uses its own subdir).")
     parser.add_argument("--resume", type=Path, default=None,
-                        help="Path to a checkpoint to resume training from.")
+                        help="Path to a checkpoint to resume training from. "
+                             "Ignored when --model both.")
 
     args = parser.parse_args()
 
@@ -140,44 +150,54 @@ def main() -> None:
 
     # ── Step 8: Train ─────────────────────────────────────────────────────────
     if not args.skip_training:
-        print("[model_pipeline] Step 8: Training model...")
+        try:
+            import torch as _torch
+            n_gpus = _torch.cuda.device_count()
+        except Exception:
+            n_gpus = 0
 
-        model_type = args.model or model_cfg.get("type", "attention")
+        raw_model = args.model or model_cfg.get("type", "attention")
+        model_types = ["distance", "attention"] if raw_model == "both" else [raw_model]
 
-        train_args = (
-            filter_args
-            + data_root_args
-            + [
-                "--model",               model_type,
-                "--hidden-dim",          str(model_cfg.get("hidden_dim",           256)),
-                "--n-rbf",               str(model_cfg.get("n_rbf",                16)),
-                "--n-heads",             str(model_cfg.get("n_heads",              4)),
-                "--n-bond-radial-rounds",str(model_cfg.get("n_bond_radial_rounds", 2)),
-                "--n-aq-rounds",         str(model_cfg.get("n_aq_rounds",          3)),
-                "--n-qq-rounds",         str(model_cfg.get("n_qq_rounds",          2)),
-                "--sample-frac",         str(train_cfg.get("sample_frac",          0.05)),
-                "--epochs",              str(args.epochs or train_cfg.get("epochs", 100)),
-                "--max-edges-per-batch", str(train_cfg.get("max_edges_per_batch",  2_000_000)),
-                "--lr",                  str(train_cfg.get("lr",                   3e-4)),
-                "--weight-decay",        str(train_cfg.get("weight_decay",         1e-4)),
-                "--pearson-weight",      str(train_cfg.get("pearson_weight",       0.1)),
-                "--clip-grad",           str(train_cfg.get("clip_grad",            1.0)),
-                "--lr-patience",         str(train_cfg.get("lr_patience",          15)),
-                "--train-frac",          str(train_cfg.get("train_frac",           0.8)),
-                "--val-frac",            str(train_cfg.get("val_frac",             0.1)),
-                "--split-seed",          str(train_cfg.get("split_seed",           42)),
-            ]
-        )
-        if args.checkpoint_dir:
-            train_args += ["--checkpoint-dir", str(args.checkpoint_dir)]
-        if args.resume:
-            train_args += ["--resume", str(args.resume)]
+        for model_type in model_types:
+            print(f"[model_pipeline] Step 8: Training {model_type} model...")
 
-        ok = _run_script("scripts/08_train.py", train_args)
-        if not ok:
-            print("[model_pipeline] Step 8 failed.")
-            sys.exit(1)
-        print("[model_pipeline] Step 8: Training complete.")
+            train_args = (
+                filter_args
+                + data_root_args
+                + [
+                    "--model",               model_type,
+                    "--hidden-dim",          str(model_cfg.get("hidden_dim",           256)),
+                    "--n-rbf",               str(model_cfg.get("n_rbf",                16)),
+                    "--n-heads",             str(model_cfg.get("n_heads",              4)),
+                    "--n-bond-radial-rounds",str(model_cfg.get("n_bond_radial_rounds", 2)),
+                    "--n-aq-rounds",         str(model_cfg.get("n_aq_rounds",          3)),
+                    "--n-qq-rounds",         str(model_cfg.get("n_qq_rounds",          2)),
+                    "--sample-frac",         str(train_cfg.get("sample_frac",          0.05)),
+                    "--epochs",              str(args.epochs or train_cfg.get("epochs", 100)),
+                    "--max-edges-per-batch", str(train_cfg.get("max_edges_per_batch",  2_000_000)),
+                    "--lr",                  str(train_cfg.get("lr",                   3e-4)),
+                    "--weight-decay",        str(train_cfg.get("weight_decay",         1e-4)),
+                    "--pearson-weight",      str(train_cfg.get("pearson_weight",       0.1)),
+                    "--clip-grad",           str(train_cfg.get("clip_grad",            1.0)),
+                    "--lr-patience",         str(train_cfg.get("lr_patience",          15)),
+                    "--train-frac",          str(train_cfg.get("train_frac",           0.8)),
+                    "--val-frac",            str(train_cfg.get("val_frac",             0.1)),
+                    "--split-seed",          str(train_cfg.get("split_seed",           42)),
+                ]
+            )
+            # --checkpoint-dir and --resume are only passed for single-model runs
+            if len(model_types) == 1:
+                if args.checkpoint_dir:
+                    train_args += ["--checkpoint-dir", str(args.checkpoint_dir)]
+                if args.resume:
+                    train_args += ["--resume", str(args.resume)]
+
+            ok = _run_script("scripts/08_train.py", train_args, nproc=max(1, n_gpus))
+            if not ok:
+                print(f"[model_pipeline] Step 8 ({model_type}) failed — aborting.")
+                sys.exit(1)
+            print(f"[model_pipeline] Step 8: {model_type} training complete.")
     else:
         print("[model_pipeline] Step 8: Skipped (--skip-training).")
 

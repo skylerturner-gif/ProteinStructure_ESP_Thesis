@@ -22,6 +22,7 @@ model weights, optimizer/scheduler state, and ESP normalization statistics
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
@@ -116,6 +117,24 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # ── DDP initialisation ────────────────────────────────────────────────────
+    ddp = "LOCAL_RANK" in os.environ
+    if ddp:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        rank       = int(os.environ.get("RANK", local_rank))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        torch.distributed.init_process_group(backend="nccl")
+        device = torch.device(f"cuda:{local_rank}")
+        torch.cuda.set_device(device)
+    else:
+        rank       = 0
+        world_size = 1
+        local_rank = 0
+        device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if rank == 0:
+        print(f"Device: {device}" + (f"  (DDP world_size={world_size})" if ddp else ""))
+
     # ── Config ────────────────────────────────────────────────────────────────
     cfg       = get_config()
     data_root = args.data_root or get_data_root()
@@ -126,15 +145,16 @@ def main() -> None:
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-
     # ── Protein IDs + dataset split ───────────────────────────────────────────
     protein_ids = get_protein_ids_from_args(args, data_root)
     if not protein_ids:
-        print("No proteins selected. Exiting.")
+        if rank == 0:
+            print("No proteins selected. Exiting.")
+        if ddp:
+            torch.distributed.destroy_process_group()
         return
-    print(f"Proteins selected: {len(protein_ids)}")
+    if rank == 0:
+        print(f"Proteins selected: {len(protein_ids)}")
 
     graph_kwargs = dict(
         sample_frac = args.sample_frac,
@@ -147,14 +167,17 @@ def main() -> None:
         val       = args.val_frac,
         seed      = args.split_seed,
     )
-    print(
-        f"Split — train: {len(train_ds)}  val: {len(val_ds)}  test: {len(test_ds)}"
-    )
+    if rank == 0:
+        print(
+            f"Split — train: {len(train_ds)}  val: {len(val_ds)}  test: {len(test_ds)}"
+        )
 
     # ── ESP normalisation (fit on training split only) ────────────────────────
-    print("Computing ESP normalisation statistics from training split...")
+    if rank == 0:
+        print("Computing ESP normalisation statistics from training split...")
     esp_mean, esp_std = compute_esp_stats(train_ds)
-    print(f"  mean={esp_mean:.4f}  std={esp_std:.4f}")
+    if rank == 0:
+        print(f"  mean={esp_mean:.4f}  std={esp_std:.4f}")
 
     norm = NormalizeESP(esp_mean, esp_std)
     train_ds.transform = norm
@@ -162,20 +185,24 @@ def main() -> None:
     test_ds.transform  = norm
 
     # ── DataLoaders ───────────────────────────────────────────────────────────
-    print("Building dynamic batch samplers (reads edge counts from metadata)...")
+    if rank == 0:
+        print("Building dynamic batch samplers (reads edge counts from metadata)...")
     train_sampler = DynamicBatchSampler(
         train_ds, args.max_edges_per_batch,
         shuffle=True, drop_last=True,
+        rank=rank, world_size=world_size,
     )
     val_sampler = DynamicBatchSampler(
         val_ds, args.max_edges_per_batch,
         shuffle=False, drop_last=False,
+        rank=rank, world_size=world_size,
     )
-    print(
-        f"  ~{len(train_sampler)} train batches  |  "
-        f"~{len(val_sampler)} val batches  "
-        f"(budget: {args.max_edges_per_batch:,} edges/batch)"
-    )
+    if rank == 0:
+        print(
+            f"  ~{len(train_sampler)} train batches/rank  |  "
+            f"~{len(val_sampler)} val batches/rank  "
+            f"(budget: {args.max_edges_per_batch:,} edges/batch)"
+        )
 
     train_loader = DataLoader(
         train_ds, batch_sampler=train_sampler, num_workers=args.num_workers,
@@ -186,8 +213,12 @@ def main() -> None:
 
     # ── Model ─────────────────────────────────────────────────────────────────
     model = build_model(args, device)
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Model: {args.model}  |  parameters: {n_params:,}")
+    if ddp:
+        from torch.nn.parallel import DistributedDataParallel
+        model = DistributedDataParallel(model, device_ids=[local_rank])
+    if rank == 0:
+        n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model: {args.model}  |  parameters: {n_params:,}")
 
     # ── Optimiser + scheduler ─────────────────────────────────────────────────
     optimizer = torch.optim.AdamW(
@@ -199,8 +230,10 @@ def main() -> None:
 
     # ── Resume from checkpoint ────────────────────────────────────────────────
     if args.resume is not None:
-        print(f"Resuming from: {args.resume}")
-        Trainer.load_checkpoint(args.resume, model, optimizer, scheduler)
+        if rank == 0:
+            print(f"Resuming from: {args.resume}")
+        raw_model = model.module if ddp else model
+        Trainer.load_checkpoint(args.resume, raw_model, optimizer, scheduler)
 
     # ── Trainer ───────────────────────────────────────────────────────────────
     loss_fn = ESPLoss(pearson_weight=args.pearson_weight)
@@ -212,6 +245,7 @@ def main() -> None:
         device         = device,
         checkpoint_dir = ckpt_dir,
         clip_grad_norm = args.clip_grad,
+        rank           = rank,
         extra_state    = {
             "model_name":   args.model,
             "esp_mean":     esp_mean,
@@ -227,50 +261,57 @@ def main() -> None:
         },
     )
 
-    log.info(
-        "Training %s on %d proteins for %d epochs",
-        args.model, len(protein_ids), args.epochs,
-    )
+    if rank == 0:
+        log.info(
+            "Training %s on %d proteins for %d epochs",
+            args.model, len(protein_ids), args.epochs,
+        )
 
     trainer.fit(train_loader, val_loader, n_epochs=args.epochs)
 
-    # ── Test evaluation ───────────────────────────────────────────────────────
-    if len(test_ds) == 0:
-        print("\nNo test proteins — skipping test evaluation.")
-    else:
-        print(f"\nEvaluating on {len(test_ds)} test proteins...")
-        Trainer.load_checkpoint(ckpt_dir / "best_model.pt", model)
+    # ── Test evaluation (rank 0 only) ─────────────────────────────────────────
+    if not ddp or rank == 0:
+        if len(test_ds) == 0:
+            print("\nNo test proteins — skipping test evaluation.")
+        else:
+            print(f"\nEvaluating on {len(test_ds)} test proteins...")
+            raw_model = model.module if ddp else model
+            Trainer.load_checkpoint(ckpt_dir / "best_model.pt", raw_model)
 
-        pred_dir = ckpt_dir / "test_predictions"
-        results  = trainer.evaluate_test(test_ds, predictions_dir=pred_dir)
+            pred_dir = ckpt_dir / "test_predictions"
+            results  = trainer.evaluate_test(test_ds, predictions_dir=pred_dir)
 
-        g = results["global"]
-        print(
-            f"\nTest results  (best checkpoint, {g['n_proteins']} proteins)\n"
-            f"  Loss:      {g['loss']:.4f}\n"
-            f"  RMSE:      {g['rmse']:.4f} kT/e\n"
-            f"  MAE:       {g['mae']:.4f} kT/e\n"
-            f"  Pearson r: {g['pearson_r']:.4f}\n"
-        )
-
-        # Per-protein summary: sort by Pearson r ascending so worst are first
-        pp = results["per_protein"]
-        ranked = sorted(pp.items(), key=lambda kv: kv[1]["pearson_r"])
-        print(f"{'Protein':<30}  {'Pearson r':>10}  {'RMSE':>10}  {'MAE':>10}")
-        print("-" * 66)
-        for pid, m in ranked:
+            g = results["global"]
             print(
-                f"{pid:<30}  {m['pearson_r']:>10.4f}  "
-                f"{m['rmse']:>10.4f}  {m['mae']:>10.4f}"
+                f"\nTest results  (best checkpoint, {g['n_proteins']} proteins)\n"
+                f"  Loss:      {g['loss']:.4f}\n"
+                f"  RMSE:      {g['rmse']:.4f} kT/e\n"
+                f"  MAE:       {g['mae']:.4f} kT/e\n"
+                f"  Pearson r: {g['pearson_r']:.4f}\n"
             )
-        print(f"\nPredictions saved to: {pred_dir}")
-        print(f"Per-protein metrics:  {ckpt_dir / 'test_metrics.json'}")
-        print(f"Training history:     {ckpt_dir / 'metrics.csv'}")
 
-        log.info(
-            "Test complete — loss=%.4f  rmse=%.4f  pearson_r=%.4f",
-            g["loss"], g["rmse"], g["pearson_r"],
-        )
+            # Per-protein summary: sort by Pearson r ascending so worst are first
+            pp = results["per_protein"]
+            ranked = sorted(pp.items(), key=lambda kv: kv[1]["pearson_r"])
+            print(f"{'Protein':<30}  {'Pearson r':>10}  {'RMSE':>10}  {'MAE':>10}")
+            print("-" * 66)
+            for pid, m in ranked:
+                print(
+                    f"{pid:<30}  {m['pearson_r']:>10.4f}  "
+                    f"{m['rmse']:>10.4f}  {m['mae']:>10.4f}"
+                )
+            print(f"\nPredictions saved to: {pred_dir}")
+            print(f"Per-protein metrics:  {ckpt_dir / 'test_metrics.json'}")
+            print(f"Training history:     {ckpt_dir / 'metrics.csv'}")
+
+            log.info(
+                "Test complete — loss=%.4f  rmse=%.4f  pearson_r=%.4f",
+                g["loss"], g["rmse"], g["pearson_r"],
+            )
+
+    # ── DDP teardown ──────────────────────────────────────────────────────────
+    if ddp:
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

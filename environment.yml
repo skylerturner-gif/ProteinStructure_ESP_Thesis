@@ -1,11 +1,7 @@
-name: base
+name: protein_esp
 channels:
-  - defaults
+  - conda-forge
 dependencies:
-  - python=3.13
-  - conda=26.1.1
-  - setuptools
-  - pip
   - wheel
   - conda-anaconda-telemetry[version='>=0.3.0']
   - conda-anaconda-tos[version='>=0.2.2']
@@ -14,4 +10,20 @@ dependencies:
   - menuinst
   - anaconda-anon-usage
   - anaconda-auth
+  - python=3.13.11
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - pillow
+  - pip
+  - pip:
+      - biopython
+      - mdanalysis
+      - pyvista
+      - vtk
+      - griddataformats
+      - mmtf-python
+      - mrcfile
+      - scooby
 prefix: /home/skyle/miniconda3

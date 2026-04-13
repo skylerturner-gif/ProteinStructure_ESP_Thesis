@@ -74,6 +74,7 @@ class Trainer:
         checkpoint_dir: Path,
         clip_grad_norm: float = 1.0,
         extra_state: dict[str, Any] | None = None,
+        rank: int = 0,
     ) -> None:
         self.model          = model.to(device)
         self.optimizer      = optimizer
@@ -83,6 +84,8 @@ class Trainer:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.clip_grad_norm = clip_grad_norm
         self.extra_state    = extra_state or {}
+        self.rank           = rank
+        self.is_main        = (rank == 0)
 
         self.best_val_loss  = float("inf")
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -151,10 +154,29 @@ class Trainer:
                     r = pearson_r(pred[mask], target[mask])
                     pearson_vals.append(r.item())
 
-        n_batches   = max(len(pearson_vals) // max(1, int(batch.max().item()) + 1), 1)
-        mean_loss   = total_loss / max(len(loader), 1)
-        rmse        = (total_sq_err / max(total_n, 1)) ** 0.5
-        mean_pearson = sum(pearson_vals) / max(len(pearson_vals), 1)
+        # All-reduce across ranks so every rank uses the same global metrics.
+        # This keeps ReduceLROnPlateau and is_best in sync across all ranks.
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            import torch.distributed as dist
+            t = torch.tensor(
+                [
+                    total_loss,
+                    total_sq_err,
+                    float(total_n),
+                    float(sum(pearson_vals)),
+                    float(len(pearson_vals)),
+                    float(len(loader)),
+                ],
+                device=self.device,
+            )
+            dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            mean_loss    = t[0].item() / max(t[5].item(), 1)
+            rmse         = (t[1].item() / max(t[2].item(), 1)) ** 0.5
+            mean_pearson = t[3].item() / max(t[4].item(), 1)
+        else:
+            mean_loss    = total_loss   / max(len(loader), 1)
+            rmse         = (total_sq_err / max(total_n, 1)) ** 0.5
+            mean_pearson = sum(pearson_vals) / max(len(pearson_vals), 1)
 
         return {"loss": mean_loss, "rmse": rmse, "pearson_r": mean_pearson}
 
@@ -165,11 +187,12 @@ class Trainer:
         Train for n_epochs, printing a one-line summary each epoch and
         saving checkpoints whenever val_loss improves.
         """
-        print(
-            f"\n{'Epoch':>6}  {'Train loss':>11}  {'Val loss':>10}  "
-            f"{'RMSE':>8}  {'Pearson r':>10}  {'LR':>10}"
-        )
-        print("-" * 65)
+        if self.is_main:
+            print(
+                f"\n{'Epoch':>6}  {'Train loss':>11}  {'Val loss':>10}  "
+                f"{'RMSE':>8}  {'Pearson r':>10}  {'LR':>10}"
+            )
+            print("-" * 65)
 
         for epoch in range(1, n_epochs + 1):
             # Let samplers (DynamicBatchSampler, DistributedSampler, etc.)
@@ -189,33 +212,35 @@ class Trainer:
             if is_best:
                 self.best_val_loss = val_m["loss"]
 
-            self._save_checkpoint("latest_model.pt", epoch, val_m)
-            if is_best:
-                self._save_checkpoint("best_model.pt", epoch, val_m)
+            if self.is_main:
+                self._save_checkpoint("latest_model.pt", epoch, val_m)
+                if is_best:
+                    self._save_checkpoint("best_model.pt", epoch, val_m)
 
-            self.history["epoch"].append(epoch)
-            self.history["train_loss"].append(train_m["loss"])
-            self.history["val_loss"].append(val_m["loss"])
-            self.history["val_rmse"].append(val_m["rmse"])
-            self.history["val_pearson_r"].append(val_m["pearson_r"])
-            self.history["lr"].append(current_lr)
-            self._save_metrics_csv()
+                self.history["epoch"].append(epoch)
+                self.history["train_loss"].append(train_m["loss"])
+                self.history["val_loss"].append(val_m["loss"])
+                self.history["val_rmse"].append(val_m["rmse"])
+                self.history["val_pearson_r"].append(val_m["pearson_r"])
+                self.history["lr"].append(current_lr)
+                self._save_metrics_csv()
 
-            marker = " *" if is_best else ""
-            print(
-                f"{epoch:>6}  {train_m['loss']:>11.4f}  {val_m['loss']:>10.4f}  "
-                f"{val_m['rmse']:>8.4f}  {val_m['pearson_r']:>10.4f}  "
-                f"{current_lr:>10.2e}{marker}"
-            )
-            log.info(
-                "epoch=%d  train_loss=%.4f  val_loss=%.4f  "
-                "rmse=%.4f  pearson_r=%.4f  lr=%.2e  t=%.1fs",
-                epoch, train_m["loss"], val_m["loss"],
-                val_m["rmse"], val_m["pearson_r"], current_lr, elapsed,
-            )
+                marker = " *" if is_best else ""
+                print(
+                    f"{epoch:>6}  {train_m['loss']:>11.4f}  {val_m['loss']:>10.4f}  "
+                    f"{val_m['rmse']:>8.4f}  {val_m['pearson_r']:>10.4f}  "
+                    f"{current_lr:>10.2e}{marker}"
+                )
+                log.info(
+                    "epoch=%d  train_loss=%.4f  val_loss=%.4f  "
+                    "rmse=%.4f  pearson_r=%.4f  lr=%.2e  t=%.1fs",
+                    epoch, train_m["loss"], val_m["loss"],
+                    val_m["rmse"], val_m["pearson_r"], current_lr, elapsed,
+                )
 
-        print(f"\nDone. Best val loss: {self.best_val_loss:.4f}")
-        print(f"Checkpoints saved to: {self.checkpoint_dir}")
+        if self.is_main:
+            print(f"\nDone. Best val loss: {self.best_val_loss:.4f}")
+            print(f"Checkpoints saved to: {self.checkpoint_dir}")
 
     # ── Checkpointing ─────────────────────────────────────────────────────────
 
@@ -223,10 +248,11 @@ class Trainer:
         self, filename: str, epoch: int, val_metrics: dict
     ) -> None:
         path = self.checkpoint_dir / filename
+        raw = self.model.module if hasattr(self.model, "module") else self.model
         torch.save(
             {
                 "epoch":           epoch,
-                "model_state":     self.model.state_dict(),
+                "model_state":     raw.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
                 "scheduler_state": self.scheduler.state_dict(),
                 "val_loss":        val_metrics["loss"],

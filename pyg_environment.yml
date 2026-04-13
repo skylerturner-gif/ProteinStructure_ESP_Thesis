@@ -1,17 +1,32 @@
-name: base
+name: pyg_env
 channels:
   - defaults
 dependencies:
   - python=3.13
-  - conda=26.1.1
   - setuptools
   - pip
   - wheel
-  - conda-anaconda-telemetry[version='>=0.3.0']
-  - conda-anaconda-tos[version='>=0.2.2']
-  - conda-content-trust
-  - conda-libmamba-solver
-  - menuinst
-  - anaconda-anon-usage
-  - anaconda-auth
-prefix: /home/skyle/miniconda3
+  - numpy
+  - scipy
+  - matplotlib
+  - pandas
+  - pip:
+      # PyTorch — cu124 wheels are compatible with CUDA 13.0 driver
+      - torch --index-url https://download.pytorch.org/whl/cu124
+      - torchvision --index-url https://download.pytorch.org/whl/cu124
+      # PyTorch Geometric (scatter/sparse/cluster installed separately after env creation)
+      - torch_geometric
+      # Protein / structure packages
+      - biopython
+      - mdanalysis
+      - pyvista
+      - vtk
+      - griddataformats
+      - mmtf-python
+      - mrcfile
+      - scooby
+      # Utilities
+      - filelock
+      - pyyaml
+      - tqdm
+      - scikit-learn
