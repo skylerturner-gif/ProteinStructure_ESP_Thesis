@@ -30,7 +30,8 @@ from pathlib import Path
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RBFInterpolator, RegularGridInterpolator
+from scipy.spatial import cKDTree
 
 from src.utils.config import get_config
 from src.utils.helpers import get_logger, timer
@@ -260,6 +261,58 @@ def curvature_sampling(
                  len(selected) - need, k, need)
 
     return np.sort(np.array(selected, dtype=np.int64))
+
+
+# ── RBF mesh reconstruction ──────────────────────────────────────────────────
+
+def _rbf_epsilon(known_verts: np.ndarray) -> float:
+    """1 / mean nearest-neighbour distance among known (sampled) vertices."""
+    tree = cKDTree(known_verts)
+    dists, _ = tree.query(known_verts, k=2, workers=-1)  # k=2 to skip self
+    return 1.0 / max(float(dists[:, 1].mean()), 1e-9)
+
+
+def rbf_reconstruct(
+    verts: np.ndarray,
+    esp_known: np.ndarray,
+    sample_idx: np.ndarray,
+    kernel: str = "multiquadric",
+    neighbors: int = 50,
+) -> np.ndarray:
+    """
+    Reconstruct ESP at all mesh vertices from a sparse curvature-sampled
+    subset using RBF interpolation.
+
+    Epsilon is set to 1 / mean nearest-neighbour distance among the sampled
+    vertices, scaling the kernel to transition at the typical inter-sample
+    spacing (see notebooks/decisions/04_interpolation_strategy.ipynb).
+
+    At 5% sampling (default), multiquadric RBF gives Pearson r ≈ 0.983 and
+    RMSE ≈ 0.47 kT/e vs. 1-NN r ≈ 0.954 / RMSE ≈ 0.77 kT/e.
+
+    Args:
+        verts:      (N_v, 3) float32  — all mesh vertex positions
+        esp_known:  (N_q,)   float32  — ESP at the sampled vertices (kT/e)
+        sample_idx: (N_q,)   int64    — indices into verts of the sampled subset
+        kernel:     RBF kernel ("multiquadric" | "gaussian" | "linear" | …).
+                    "multiquadric" φ(r) = √(1 + (ε·r)²) is the default.
+        neighbors:  Number of nearest neighbours used for local support.
+                    50 gives a good accuracy/speed tradeoff at 5% sampling.
+
+    Returns:
+        (N_v,) float32 — reconstructed ESP at every mesh vertex.
+    """
+    known_verts = verts[sample_idx].astype(np.float64)
+    eps = _rbf_epsilon(known_verts)
+
+    rbf = RBFInterpolator(
+        known_verts,
+        esp_known.astype(np.float64),
+        kernel=kernel,
+        epsilon=eps,
+        neighbors=neighbors,
+    )
+    return rbf(verts.astype(np.float64)).astype(np.float32)
 
 
 # ── Save ──────────────────────────────────────────────────────────────────────

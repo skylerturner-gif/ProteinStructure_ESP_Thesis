@@ -265,7 +265,7 @@ def _download_fragment(api_entry: dict, data_root: Path) -> bool:
 def find_downloaded_protein_ids(uniprot_id: str, data_root: Path) -> list[str]:
     """
     Search data_root for all protein directories matching a UniProt ID.
-    Returns a list of protein_ids (directory names) for which a PDB file exists.
+    Returns a list of protein_ids (directory names) for which a mmCIF file exists.
 
     Args:
         uniprot_id: UniProt accession ID (e.g. "Q16613")
@@ -277,7 +277,7 @@ def find_downloaded_protein_ids(uniprot_id: str, data_root: Path) -> list[str]:
     found = []
     for protein_dir in Path(data_root).iterdir():
         if protein_dir.is_dir() and uniprot_id in protein_dir.name:
-            if (protein_dir / "structure" / f"{protein_dir.name}.pdb").exists():
+            if (protein_dir / "structure" / f"{protein_dir.name}.cif").exists():
                 found.append(protein_dir.name)
     return sorted(found)
 
