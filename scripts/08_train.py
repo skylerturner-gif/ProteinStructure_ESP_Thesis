@@ -97,8 +97,13 @@ def main() -> None:
                         help="Weight for the Pearson correlation loss term.")
     parser.add_argument("--clip-grad",      type=float, default=1.0,
                         help="Gradient clipping max norm (0 to disable).")
-    parser.add_argument("--lr-patience",    type=int,   default=15,
-                        help="ReduceLROnPlateau patience in epochs.")
+    parser.add_argument("--lr-scheduler",   type=str,   default="cosine",
+                        choices=["cosine", "plateau"],
+                        help="LR scheduler: cosine annealing (default) or ReduceLROnPlateau.")
+    parser.add_argument("--lr-min",        type=float, default=1e-6,
+                        help="Minimum LR for cosine annealing (eta_min).")
+    parser.add_argument("--lr-patience",   type=int,   default=15,
+                        help="ReduceLROnPlateau patience in epochs (plateau scheduler only).")
     parser.add_argument("--train-frac",     type=float, default=0.8)
     parser.add_argument("--val-frac",       type=float, default=0.1)
     parser.add_argument("--split-seed",     type=int,   default=42)
@@ -224,9 +229,14 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=args.lr_patience,
-    )
+    if args.lr_scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs, eta_min=args.lr_min,
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=args.lr_patience,
+        )
 
     # ── Resume from checkpoint ────────────────────────────────────────────────
     if args.resume is not None:
