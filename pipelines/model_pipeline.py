@@ -110,6 +110,9 @@ def main() -> None:
                              "sequentially. Overrides config model.type.")
     parser.add_argument("--epochs", type=int,  default=None,
                         help="Training epochs. Overrides config training.epochs.")
+    parser.add_argument("--lr-scheduler", type=str, default="cosine",
+                        choices=["cosine", "plateau"],
+                        help="LR scheduler (default: cosine).")
     parser.add_argument("--checkpoint-dir", type=Path, default=None,
                         help="Directory for checkpoints. "
                              "Defaults to <data_root>/../checkpoints/<model>. "

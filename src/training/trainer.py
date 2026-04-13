@@ -206,7 +206,11 @@ class Trainer:
             elapsed     = time.perf_counter() - t0
 
             current_lr  = self.optimizer.param_groups[0]["lr"]
-            self.scheduler.step(val_m["loss"])
+            if isinstance(self.scheduler,
+                          torch.optim.lr_scheduler.ReduceLROnPlateau):
+                self.scheduler.step(val_m["loss"])
+            else:
+                self.scheduler.step()
 
             is_best = val_m["loss"] < self.best_val_loss
             if is_best:

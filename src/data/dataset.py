@@ -30,9 +30,16 @@ from src.utils.paths import ProteinPaths
 # Proteins always assigned to the test set regardless of stratification.
 # These are the three reference proteins used throughout development.
 PINNED_TEST_IDS: tuple[str, ...] = (
-    "AF-B1WC58-F1",
-    "AF-Q16613-F1",
-    "AF-P01082-F1",
+        "AF-P01082-F1",
+        "AF-Q6P2D8-3-F1",
+        "AF-Q2ES46-F1",
+        "AF-Q6P5X5-F1",
+        "AF-Q16613-F1",
+        "AF-P28237-F1",
+        "AF-B1KRT2-F1",
+        "AF-Q6P2D8-5-F1",
+        "AF-Q6P2D8-3-F1",
+        "AF-B1WC58-F1",
 )
 
 
