@@ -183,6 +183,7 @@ def main() -> None:
                     "--weight-decay",        str(train_cfg.get("weight_decay",         1e-4)),
                     "--pearson-weight",      str(train_cfg.get("pearson_weight",       0.1)),
                     "--clip-grad",           str(train_cfg.get("clip_grad",            1.0)),
+                    "--lr-scheduler",        args.lr_scheduler,
                     "--lr-patience",         str(train_cfg.get("lr_patience",          15)),
                     "--train-frac",          str(train_cfg.get("train_frac",           0.8)),
                     "--val-frac",            str(train_cfg.get("val_frac",             0.1)),
