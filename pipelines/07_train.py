@@ -1,24 +1,23 @@
 """
-scripts/08_train.py
+pipelines/07_train.py
 
 Train DistanceESPN or AttentionESPN on ESP surface graphs.
 
 Usage
 -----
     # Train on all proteins, distance model
-    python scripts/08_train.py --model distance --all
+    python pipelines/07_train.py --model distance --all
 
     # Train on filtered proteins, attention model, resume from checkpoint
-    python scripts/08_train.py --model attention --filter --min-plddt 70 \\
-        --epochs 150 --batch-size 4 --resume checkpoints/run_01/latest_model.pt
+    python pipelines/07_train.py --model attention --filter --min-plddt 70 \\
+        --epochs 150 --resume checkpoints/run_01/latest_model.pt
 
     # Override architecture defaults
-    python scripts/08_train.py --model attention --all \\
+    python pipelines/07_train.py --model attention --all \\
         --hidden-dim 256 --n-heads 8 --n-aq-rounds 4
 
-Checkpoints are saved to <checkpoint-dir>/<model>_<variant>/ and contain
-model weights, optimizer/scheduler state, and ESP normalization statistics
-(esp_mean, esp_std) needed for inference.
+Checkpoints are saved to <checkpoint-dir>/<model>/ and contain model weights,
+optimizer/scheduler state, and ESP normalization statistics (esp_mean, esp_std).
 """
 
 import argparse
@@ -82,8 +81,6 @@ def main() -> None:
     parser.add_argument("--n-qq-rounds",       type=int,   default=2)
 
     # ── Graph construction ────────────────────────────────────────────────────
-    parser.add_argument("--sample-frac", type=float, default=0.05,
-                        help="Fraction of mesh vertices used as query nodes.")
     parser.add_argument("--rebuild-graphs", action="store_true",
                         help="Ignore cached graphs and rebuild from scratch.")
 
@@ -91,7 +88,7 @@ def main() -> None:
     parser.add_argument("--epochs",             type=int,   default=100)
     parser.add_argument("--max-edges-per-batch", type=int,  default=200_000,
                         help="Edge budget per batch for DynamicBatchSampler.")
-    parser.add_argument("--lr",             type=float, default=3e-4)
+    parser.add_argument("--lr",             type=float, default=5e-4)
     parser.add_argument("--weight-decay",   type=float, default=1e-4)
     parser.add_argument("--pearson-weight", type=float, default=0.1,
                         help="Weight for the Pearson correlation loss term.")
@@ -111,7 +108,7 @@ def main() -> None:
     # ── I/O ───────────────────────────────────────────────────────────────────
     parser.add_argument(
         "--checkpoint-dir", type=Path, default=None,
-        help="Directory for checkpoints. Defaults to <data_root>/../checkpoints.",
+        help="Directory for checkpoints. Defaults to <data_root>/../checkpoints/<model>.",
     )
     parser.add_argument(
         "--resume", type=Path, default=None,
@@ -161,16 +158,12 @@ def main() -> None:
     if rank == 0:
         print(f"Proteins selected: {len(protein_ids)}")
 
-    graph_kwargs = dict(
-        sample_frac = args.sample_frac,
-        rebuild     = args.rebuild_graphs,
-    )
-    full_ds = ProteinGraphDataset(protein_ids, data_root, **graph_kwargs)
+    full_ds = ProteinGraphDataset(protein_ids, data_root, rebuild=args.rebuild_graphs)
     train_ds, val_ds, test_ds = split_dataset(
         full_ds,
-        train     = args.train_frac,
-        val       = args.val_frac,
-        seed      = args.split_seed,
+        train = args.train_frac,
+        val   = args.val_frac,
+        seed  = args.split_seed,
     )
     if rank == 0:
         print(
@@ -300,8 +293,7 @@ def main() -> None:
                 f"  Pearson r: {g['pearson_r']:.4f}\n"
             )
 
-            # Per-protein summary: sort by Pearson r ascending so worst are first
-            pp = results["per_protein"]
+            pp     = results["per_protein"]
             ranked = sorted(pp.items(), key=lambda kv: kv[1]["pearson_r"])
             print(f"{'Protein':<30}  {'Pearson r':>10}  {'RMSE':>10}  {'MAE':>10}")
             print("-" * 66)

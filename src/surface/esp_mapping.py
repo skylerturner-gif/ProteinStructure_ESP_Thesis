@@ -4,24 +4,28 @@ src/surface/esp_mapping.py
 ESP surface sampling — trilinear interpolation from APBS DX grid.
 
 For a given protein ID, loads the PQR mesh (.npz) and APBS .dx ESP grid,
-then trilinearly interpolates ESP onto all surface vertices.  The result
-is the ground-truth label file used during training and evaluation.
+then trilinearly interpolates ESP onto all surface vertices and selects a
+curvature-prioritised ~5% query-node subset.  The result is the canonical
+ground-truth label file used during training and evaluation.
 
 Output:
-    {id}_esp.npz  — ESP at all vertices (kT/e), saved to esp/
+    {id}_esp.npz  — ESP at all vertices (kT/e) + curvature-sampled query_idx,
+                    saved to esp/
 
-Curvature-prioritised vertex sampling (curvature_sampling) is also exported
-from this module — it is called by src.data.graph_builder to select the 5%
-query-node subset passed to the model at graph-build time.
+The query_idx array in the .npz is the single authoritative vertex selection:
+    - src.data.graph_builder loads it to place query nodes
+    - pipelines/05_evaluate_esp.py loads it to run the RBF interpolation baseline
+    - scripts/analyze_model.py loads it to reconstruct model predictions
 
-Reconstruction of the remaining 95% from model predictions uses
-multiquadratic RBF and is handled at evaluation time — see scripts/05_evaluate.py.
+reconstruct_full_mesh is also exported from this module — it reconstructs ESP at
+all mesh vertices from sparse query-point predictions via RBF or 1-NN.
 
 Config keys used:
     esp_mapping.normal_offset
+    esp_mapping.sample_frac   (default 0.05)
 
 Usage:
-    from src.surface.esp_mapping import sample_esp
+    from src.surface.esp_mapping import sample_esp, reconstruct_full_mesh
     sample_esp(protein_id="AF-Q16613-F1", data_root=Path("/data"))
 """
 
@@ -31,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 from scipy.interpolate import RBFInterpolator, RegularGridInterpolator
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree, KDTree
 
 from src.utils.config import get_config
 from src.utils.helpers import get_logger, timer
@@ -315,6 +319,49 @@ def rbf_reconstruct(
     return rbf(verts.astype(np.float64)).astype(np.float32)
 
 
+# ── Full-mesh reconstruction ─────────────────────────────────────────────────
+
+def reconstruct_full_mesh(
+    query_pos: np.ndarray,
+    query_esp: np.ndarray,
+    mesh_verts: np.ndarray,
+    method: str = "multiquadric",
+) -> np.ndarray:
+    """
+    Reconstruct ESP at all mesh vertices from sparse query-point values.
+
+    Query points are a curvature-prioritised subset of mesh vertices.  Their
+    positions are matched back to vertex indices via KDTree (exact match since
+    query_pos is a strict subset of mesh_verts), then passed to the chosen
+    interpolation method.
+
+    Methods:
+        "multiquadric"  — RBF φ(r)=√(1+(ε·r)²), ε=1/mean-nn-dist.
+                          Best accuracy (r≈0.983, RMSE≈0.47 kT/e at 5%).
+        "gaussian"      — RBF φ(r)=exp(-(ε·r)²), same ε. Slightly lower accuracy.
+        "nearest"       — 1-NN, instant but coarser (r≈0.954, RMSE≈0.77).
+
+    Args:
+        query_pos:  (N_q, 3) positions of query nodes
+        query_esp:  (N_q,)   ESP at those positions (kT/e)
+        mesh_verts: (N_v, 3) all mesh vertex positions
+        method:     reconstruction method (default "multiquadric")
+
+    Returns:
+        (N_v,) float32 ESP at every mesh vertex
+    """
+    tree = KDTree(mesh_verts)
+    _, sample_idx = tree.query(query_pos, k=1, workers=-1)
+    sample_idx = sample_idx.astype(np.int64)
+
+    if method == "nearest":
+        q_tree = KDTree(query_pos)
+        _, nn_idx = q_tree.query(mesh_verts, k=1, workers=-1)
+        return query_esp[nn_idx].astype(np.float32)
+
+    return rbf_reconstruct(mesh_verts, query_esp, sample_idx, kernel=method)
+
+
 # ── Save ──────────────────────────────────────────────────────────────────────
 
 def _save_npz(
@@ -323,10 +370,20 @@ def _save_npz(
     faces: np.ndarray,
     esp_verts: np.ndarray,
     esp_faces: np.ndarray,
+    query_idx: np.ndarray,
 ) -> None:
-    np.savez_compressed(path, verts=verts, faces=faces,
-                        esp_verts=esp_verts, esp_faces=esp_faces)
-    log.info("Saved → %s  (%d verts, %d faces)", path.name, len(verts), len(faces))
+    np.savez_compressed(
+        path,
+        verts=verts,
+        faces=faces,
+        esp_verts=esp_verts,
+        esp_faces=esp_faces,
+        query_idx=query_idx,
+    )
+    log.info(
+        "Saved → %s  (%d verts, %d faces, %d query pts)",
+        path.name, len(verts), len(faces), len(query_idx),
+    )
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -336,9 +393,11 @@ def sample_esp(
     data_root: Path,
     *,
     grid_data: tuple | None = None,
+    sample_frac: float | None = None,
 ) -> bool:
     """
-    Trilinearly interpolate APBS ESP onto all PQR mesh vertices.
+    Trilinearly interpolate APBS ESP onto all PQR mesh vertices and select
+    the curvature-prioritised query-node subset used for training/evaluation.
 
     Expects:
         <data_root>/<protein_id>/mesh/<protein_id>_mesh.npz
@@ -346,19 +405,20 @@ def sample_esp(
         <data_root>/<protein_id>/electrostatics/<protein_id>.dx on disk.
 
     Produces:
-        <data_root>/<protein_id>/esp/<protein_id>_esp.npz
-            — ESP at every vertex and face (kT/e), used as training labels
-              and evaluation ground truth.
-
-    The 5% query-node subset is selected at graph-build time via
-    curvature_sampling (imported by src.data.graph_builder).
+        <data_root>/<protein_id>/esp/<protein_id>_esp.npz  with keys:
+            esp_verts  — ESP at every vertex (kT/e), ground truth
+            esp_faces  — ESP averaged over faces (kT/e), ground truth
+            query_idx  — curvature-sampled vertex indices for graph building
+                         and evaluation (single authoritative selection)
 
     Args:
-        protein_id: e.g. "AF-Q16613-F1"
-        data_root:  root of the external data directory
-        grid_data:  optional (axes, grid) tuple returned by process_apbs.
-                    When provided the .dx file is not read from disk.
-                    When None (default), reads from p.dx_path.
+        protein_id:  e.g. "AF-Q16613-F1"
+        data_root:   root of the external data directory
+        grid_data:   optional (axes, grid) tuple returned by process_apbs.
+                     When provided the .dx file is not read from disk.
+                     When None (default), reads from p.dx_path.
+        sample_frac: fraction of mesh vertices to select as query nodes.
+                     Defaults to config esp_mapping.sample_frac or 0.05.
 
     Returns:
         True on success, False if any required input file is missing.
@@ -375,13 +435,21 @@ def sample_esp(
             plog.error("Missing .dx file and no grid_data supplied: %s", p.dx_path)
             return False
 
-    normal_offset = get_config()["esp_mapping"]["normal_offset"]
-    plog.info("── ESP sampling  normal_offset=%.2f Å ──", normal_offset)
+    cfg           = get_config()
+    normal_offset = cfg["esp_mapping"]["normal_offset"]
+    if sample_frac is None:
+        sample_frac = cfg.get("esp_mapping", {}).get("sample_frac", 0.05)
+
+    plog.info(
+        "── ESP sampling  normal_offset=%.2f Å  sample_frac=%.3f ──",
+        normal_offset, sample_frac,
+    )
 
     mesh_data = np.load(p.mesh_path)
     verts     = mesh_data["verts"]
     normals   = mesh_data["normals"]
     faces     = mesh_data["faces"]
+    ses_area  = float(mesh_data["ses_area"])
     plog.info("Loaded mesh: %d verts, %d faces", len(verts), len(faces))
 
     axes, grid = grid_data if grid_data is not None else read_dx(p.dx_path)
@@ -390,13 +458,21 @@ def sample_esp(
     with timer() as t:
         esp_verts = trilinear_esp(axes, grid, sample_pts)
         esp_faces = interpolate_faces_from_verts(faces, esp_verts)
-        _save_npz(p.esp_path, verts, faces, esp_verts, esp_faces)
-        plog.info("ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]",
-                  esp_verts.min(), esp_verts.max(),
-                  esp_faces.min(), esp_faces.max())
+
+        n_query   = max(1, int(len(verts) * sample_frac))
+        query_idx = curvature_sampling(verts, faces, n_query, ses_area)
+
+        _save_npz(p.esp_path, verts, faces, esp_verts, esp_faces, query_idx)
+        plog.info(
+            "ESP  verts [%.3f, %.3f]  faces [%.3f, %.3f]  query=%d",
+            esp_verts.min(), esp_verts.max(),
+            esp_faces.min(), esp_faces.max(),
+            len(query_idx),
+        )
 
     update_metadata(protein_id, data_root=data_root, data={
         "time_esp_sampling_sec": t.rounded,
+        "n_query_nodes":         int(len(query_idx)),
     })
     plog.info("ESP sampling complete: %.2f s", t.seconds)
     return True

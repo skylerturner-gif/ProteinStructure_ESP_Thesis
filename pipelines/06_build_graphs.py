@@ -1,24 +1,26 @@
 """
-scripts/07_build_graphs.py
+pipelines/06_build_graphs.py
 
-Pre-build and cache PyG HeteroData graphs for all proteins.
+Pre-build and cache PyG HeteroData graphs for a filtered set of proteins.
 
 Each graph is saved as a .pt file to:
     <data_root>/<protein_id>/graph/<protein_id>_graph.pt
+
+Query nodes are loaded from the canonical query_idx stored in the protein's
+ESP .npz (written by 04_sample_esp.py).  This guarantees the same vertex
+subset is used across graph building, interpolation evaluation, and training.
 
 Graph node/edge counts are written to the protein metadata JSON so that
 DynamicBatchSampler can bin proteins by total edge budget without loading
 graphs from disk.
 
 Usage:
-    python scripts/07_build_graphs.py --all
-    python scripts/07_build_graphs.py --filter --min-plddt 70
-    python scripts/07_build_graphs.py --all --force      # rebuild cached
-    python scripts/07_build_graphs.py --all --sample-frac 0.05
+    python pipelines/06_build_graphs.py --all
+    python pipelines/06_build_graphs.py --filter --min-plddt 70
+    python pipelines/06_build_graphs.py --all --force      # rebuild cached
 """
 
 import argparse
-import os
 from pathlib import Path
 
 import torch
@@ -35,16 +37,11 @@ from src.utils.paths import ProteinPaths
 def _build_one(
     protein_id: str,
     data_root: Path,
-    sample_frac: float,
     force: bool,
     log,
 ) -> str:
-    """
-    Build and cache the graph for one protein.
-
-    Returns "ok", "skip", or "fail".
-    """
-    p = ProteinPaths(protein_id, data_root)
+    """Build and cache the graph for one protein. Returns "ok", "skip", or "fail"."""
+    p          = ProteinPaths(protein_id, data_root)
     graph_path = p.graph_path()
 
     if graph_path.exists() and not force:
@@ -61,7 +58,7 @@ def _build_one(
 
     try:
         with timer() as t:
-            data = build_graph(protein_id, data_root, sample_frac=sample_frac)
+            data = build_graph(protein_id, data_root)
 
         torch.save(data, graph_path)
 
@@ -88,22 +85,15 @@ def _build_one(
         return "fail"
 
 
-def _build_one_worker(protein_id: str, data_root_str: str, sample_frac: float, force: bool) -> tuple[str, str]:
-    """
-    Process-pool-safe wrapper around _build_one.
-
-    Takes only picklable primitive arguments and creates its own logger
-    so it can be submitted to ProcessPoolExecutor.
-
-    Returns (protein_id, status) where status is "ok", "skip", or "fail".
-    """
+def _build_one_worker(protein_id: str, data_root_str: str, force: bool) -> tuple[str, str]:
+    """Process-pool-safe wrapper. Returns (protein_id, status)."""
     from pathlib import Path
     from src.utils.config import get_config
     from src.utils.helpers import get_pipeline_logger
 
     data_root = Path(data_root_str)
     log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
-    status    = _build_one(protein_id, data_root, sample_frac, force, log)
+    status    = _build_one(protein_id, data_root, force, log)
     return protein_id, status
 
 
@@ -114,17 +104,12 @@ def main() -> None:
     parser.add_argument("--data-root", type=Path, default=None,
                         help="Override data_root from config.yaml.")
     parser.add_argument(
-        "--sample-frac", type=float, default=0.05,
-        help="Fraction of mesh vertices used as query nodes (default: 0.05).",
-    )
-    parser.add_argument(
         "--force", action="store_true",
         help="Rebuild and overwrite existing cached graphs.",
     )
     parser.add_argument(
         "--workers", type=int, default=1,
-        help="Number of parallel worker processes (default: 1). "
-             "Set >1 to build graphs concurrently across proteins.",
+        help="Number of parallel worker processes (default: 1).",
     )
     add_filter_args(parser)
     args = parser.parse_args()
@@ -138,16 +123,15 @@ def main() -> None:
         return
 
     log.info(
-        "Building graphs for %d proteins  sample_frac=%.2f  force=%s  workers=%d",
-        len(protein_ids), args.sample_frac, args.force, args.workers,
+        "Building graphs for %d proteins  force=%s  workers=%d",
+        len(protein_ids), args.force, args.workers,
     )
 
     n_ok = n_skip = n_fail = 0
 
     if args.workers == 1:
-        # Sequential path — simpler stack traces when debugging.
         for protein_id in protein_ids:
-            status = _build_one(protein_id, data_root, args.sample_frac, args.force, log)
+            status = _build_one(protein_id, data_root, args.force, log)
             if status == "ok":
                 n_ok   += 1; notify(protein_id, "complete", "graph build")
             elif status == "skip":
@@ -155,10 +139,9 @@ def main() -> None:
             else:
                 n_fail += 1; notify(protein_id, "failed",   "graph build")
     else:
-        # Parallel path — one process per protein.
         results = run_parallel(
             _build_one_worker,
-            [(pid, str(data_root), args.sample_frac, args.force) for pid in protein_ids],
+            [(pid, str(data_root), args.force) for pid in protein_ids],
             n_workers=args.workers,
             label="graphs",
         )
@@ -168,7 +151,7 @@ def main() -> None:
                 notify(protein_id, "failed", f"graph build exception: {outcome}")
                 log.error("[%s] Worker exception: %s", protein_id, outcome)
                 continue
-            _, status = outcome  # outcome = (protein_id, status) from worker
+            _, status = outcome
             if status == "ok":
                 n_ok   += 1; notify(protein_id, "complete", "graph build")
             elif status == "skip":

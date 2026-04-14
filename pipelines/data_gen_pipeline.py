@@ -27,7 +27,7 @@ Usage:
 import argparse
 from pathlib import Path
 
-from src.analysis.metrics import evaluate_protein
+from src.analysis.esp_stats import evaluate_protein
 from src.electrostatics.run_apbs import process_apbs
 from src.electrostatics.run_pdb2pqr import process_pdb2pqr
 from src.structure.af_api import download_protein, find_downloaded_protein_ids, read_uniprot_ids
@@ -120,19 +120,17 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool =
             ok = sample_esp(protein_id, data_root, grid_data=grid_data)
             step_results["esp_sampling"] = "success" if ok else "failed"
 
-        # ── Step 6: Evaluate ──────────────────────────────────────────────────
-        if p.is_evaluated():
-            step_results["evaluate"] = "skipped"
-        elif not p.esp_exists():
+        # ── Step 6: Evaluate ESP (always runs) ───────────────────────────────
+        if not p.esp_exists():
             plog.error("[%s] Step 6: ESP file missing", protein_id)
-            step_results["evaluate"] = "failed"
+            step_results["evaluate_esp"] = "failed"
         else:
             try:
                 evaluate_protein(protein_id, data_root, write_metadata=True)
-                step_results["evaluate"] = "success"
+                step_results["evaluate_esp"] = "success"
             except Exception as e:
-                plog.error("[%s] Step 6 failed: %s", protein_id, e)
-                step_results["evaluate"] = "failed"
+                plog.error("[%s] Step 6 evaluate_esp failed: %s", protein_id, e)
+                step_results["evaluate_esp"] = "failed"
 
     try:
         update_metadata(protein_id, data_root=data_root, data={
@@ -174,7 +172,7 @@ def _run_protein_worker(protein_id: str, data_root_str: str, keep_dx: bool) -> t
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 def _log_summary(all_results: dict, log) -> None:
-    steps = ["pdb2pqr", "apbs", "mesh", "esp_sampling", "evaluate"]
+    steps = ["pdb2pqr", "apbs", "mesh", "esp_sampling", "evaluate_esp"]
     log.info("═" * 70)
     log.info("DATA GEN PIPELINE SUMMARY")
     log.info("═" * 70)

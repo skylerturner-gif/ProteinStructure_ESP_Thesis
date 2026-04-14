@@ -8,7 +8,7 @@ Graphs that exceed the budget by themselves are always emitted as singletons —
 they are never skipped.
 
 Edge counts are read once from per-protein metadata (the ``num_edges_total``
-field written by ``scripts/07_build_graphs.py``) at construction time; no
+field written by ``pipelines/06_build_graphs.py``) at construction time; no
 graph files are opened during iteration.
 
 Public API
