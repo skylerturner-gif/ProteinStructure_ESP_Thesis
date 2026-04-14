@@ -25,6 +25,7 @@ from pathlib import Path
 
 import torch
 
+from src.data.dataset import ProteinGraphDataset, write_split_manifest
 from src.data.graph_builder import build_graph
 from src.utils.config import get_config, get_data_root
 from src.utils.filter import add_filter_args, get_protein_ids_from_args
@@ -108,6 +109,13 @@ def main() -> None:
         help="Rebuild and overwrite existing cached graphs.",
     )
     parser.add_argument(
+        "--resplit", action="store_true",
+        help="Regenerate split_manifest.json even if one already exists.",
+    )
+    parser.add_argument("--train-frac",  type=float, default=0.8)
+    parser.add_argument("--val-frac",    type=float, default=0.1)
+    parser.add_argument("--split-seed",  type=int,   default=42)
+    parser.add_argument(
         "--workers", type=int, default=1,
         help="Number of parallel worker processes (default: 1).",
     )
@@ -161,6 +169,30 @@ def main() -> None:
 
     log.info("Done — ok: %d  skipped: %d  failed: %d", n_ok, n_skip, n_fail)
     print(f"Done — ok: {n_ok}  skipped: {n_skip}  failed: {n_fail}")
+
+    # ── Split manifest ────────────────────────────────────────────────────────
+    from src.data.dataset import SPLIT_MANIFEST_NAME
+    manifest_path = data_root / SPLIT_MANIFEST_NAME
+
+    if manifest_path.exists() and not args.resplit:
+        print(f"Split manifest already exists — skipping (use --resplit to regenerate).")
+        log.info("Split manifest exists at %s — skipping", manifest_path)
+    else:
+        # Only proteins that have a successfully built graph are eligible.
+        from src.utils.paths import ProteinPaths as _PP
+        built_ids = [
+            pid for pid in protein_ids
+            if _PP(pid, data_root).graph_path().exists()
+        ]
+        full_ds = ProteinGraphDataset(built_ids, data_root)
+        path = write_split_manifest(
+            full_ds,
+            train=args.train_frac,
+            val=args.val_frac,
+            seed=args.split_seed,
+        )
+        log.info("Split manifest written to %s", path)
+        print(f"Split manifest written → {path}")
 
 
 if __name__ == "__main__":

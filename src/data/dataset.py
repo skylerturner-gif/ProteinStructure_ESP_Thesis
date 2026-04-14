@@ -16,6 +16,8 @@ Public API
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,9 @@ from torch.utils.data import Dataset
 from src.data.graph_builder import build_graph
 from src.utils.io import load_metadata
 from src.utils.paths import ProteinPaths
+
+
+SPLIT_MANIFEST_NAME = "split_manifest.json"
 
 
 # Proteins always assigned to the test set regardless of stratification.
@@ -245,3 +250,83 @@ def split_dataset(
         ProteinGraphDataset(val_ids,   **shared),
         ProteinGraphDataset(test_ids,  **shared),
     )
+
+
+# ── Split manifest ────────────────────────────────────────────────────────────
+
+def write_split_manifest(
+    dataset: ProteinGraphDataset,
+    train: float = 0.8,
+    val: float = 0.1,
+    seed: int = 42,
+    pinned_test: tuple[str, ...] = PINNED_TEST_IDS,
+) -> Path:
+    """
+    Run the stratified split once and persist the result to
+    ``<data_root>/split_manifest.json``.
+
+    The manifest records every parameter used to generate the split so the
+    file is self-documenting.  Training scripts load it with
+    ``load_split_manifest`` instead of calling ``split_dataset`` directly,
+    guaranteeing identical splits across all ablation runs.
+
+    If the manifest already exists this function is a no-op and returns the
+    existing path.  Pass ``force=True`` (via the pipeline CLI ``--resplit``)
+    to regenerate.
+
+    Args:
+        dataset:     source ProteinGraphDataset (all proteins with built graphs)
+        train:       training fraction (default 0.8)
+        val:         validation fraction (default 0.1)
+        seed:        RNG seed (default 42)
+        pinned_test: protein IDs always placed in the test split
+
+    Returns:
+        Path to the written manifest file.
+    """
+    manifest_path = Path(dataset.data_root) / SPLIT_MANIFEST_NAME
+
+    train_ds, val_ds, test_ds = split_dataset(
+        dataset, train=train, val=val, seed=seed, pinned_test=pinned_test,
+    )
+
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "seed":         seed,
+        "train_frac":   train,
+        "val_frac":     val,
+        "pinned_test":  list(pinned_test),
+        "splits": {
+            "train": train_ds.protein_ids,
+            "val":   val_ds.protein_ids,
+            "test":  test_ds.protein_ids,
+        },
+    }
+
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return manifest_path
+
+
+def load_split_manifest(
+    data_root: Path,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Load a previously written split manifest and return the protein ID lists.
+
+    Raises:
+        FileNotFoundError: if no manifest exists at ``<data_root>/split_manifest.json``.
+                           Run ``pipelines/06_build_graphs.py`` to generate one.
+
+    Returns:
+        (train_ids, val_ids, test_ids) — lists of protein ID strings.
+    """
+    manifest_path = Path(data_root) / SPLIT_MANIFEST_NAME
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"No split manifest found at {manifest_path}.\n"
+            "Run pipelines/06_build_graphs.py to build graphs and generate the manifest."
+        )
+
+    manifest = json.loads(manifest_path.read_text())
+    splits   = manifest["splits"]
+    return splits["train"], splits["val"], splits["test"]

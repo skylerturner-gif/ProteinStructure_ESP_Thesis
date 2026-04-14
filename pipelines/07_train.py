@@ -27,7 +27,7 @@ from pathlib import Path
 import torch
 from torch_geometric.loader import DataLoader
 
-from src.data.dataset import ProteinGraphDataset, split_dataset
+from src.data.dataset import ProteinGraphDataset, load_split_manifest
 from src.data.sampler import DynamicBatchSampler
 from src.data.transform import NormalizeESP, compute_esp_stats
 from src.models.attention_espn import AttentionESPN
@@ -35,7 +35,6 @@ from src.models.distance_espn import DistanceESPN
 from src.training.loss import ESPLoss
 from src.training.trainer import Trainer
 from src.utils.config import get_config, get_data_root
-from src.utils.filter import add_filter_args, get_protein_ids_from_args
 from src.utils.helpers import get_pipeline_logger
 
 
@@ -59,8 +58,6 @@ def main() -> None:
         description="Train DistanceESPN or AttentionESPN on protein ESP graphs."
     )
 
-    # ── Protein selection ─────────────────────────────────────────────────────
-    add_filter_args(parser)
     parser.add_argument(
         "--data-root", type=Path, default=None,
         help="Override data_root from config.yaml.",
@@ -101,9 +98,6 @@ def main() -> None:
                         help="Minimum LR for cosine annealing (eta_min).")
     parser.add_argument("--lr-patience",   type=int,   default=15,
                         help="ReduceLROnPlateau patience in epochs (plateau scheduler only).")
-    parser.add_argument("--train-frac",     type=float, default=0.8)
-    parser.add_argument("--val-frac",       type=float, default=0.1)
-    parser.add_argument("--split-seed",     type=int,   default=42)
 
     # ── I/O ───────────────────────────────────────────────────────────────────
     parser.add_argument(
@@ -147,27 +141,15 @@ def main() -> None:
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Protein IDs + dataset split ───────────────────────────────────────────
-    protein_ids = get_protein_ids_from_args(args, data_root)
-    if not protein_ids:
-        if rank == 0:
-            print("No proteins selected. Exiting.")
-        if ddp:
-            torch.distributed.destroy_process_group()
-        return
-    if rank == 0:
-        print(f"Proteins selected: {len(protein_ids)}")
-
-    full_ds = ProteinGraphDataset(protein_ids, data_root, rebuild=args.rebuild_graphs)
-    train_ds, val_ds, test_ds = split_dataset(
-        full_ds,
-        train = args.train_frac,
-        val   = args.val_frac,
-        seed  = args.split_seed,
-    )
+    # ── Dataset split (loaded from manifest written by 06_build_graphs.py) ─────
+    train_ids, val_ids, test_ids = load_split_manifest(data_root)
+    train_ds = ProteinGraphDataset(train_ids, data_root, rebuild=args.rebuild_graphs)
+    val_ds   = ProteinGraphDataset(val_ids,   data_root, rebuild=False)
+    test_ds  = ProteinGraphDataset(test_ids,  data_root, rebuild=False)
     if rank == 0:
         print(
-            f"Split — train: {len(train_ds)}  val: {len(val_ds)}  test: {len(test_ds)}"
+            f"Split (from manifest) — train: {len(train_ds)}  "
+            f"val: {len(val_ds)}  test: {len(test_ds)}"
         )
 
     # ── ESP normalisation (fit on training split only) ────────────────────────
