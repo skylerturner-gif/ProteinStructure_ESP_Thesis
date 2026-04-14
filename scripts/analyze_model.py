@@ -5,9 +5,10 @@ Post-training analysis for ESP model predictions.
 
 Modes (combine freely):
     --curves          Plot training/val loss, RMSE, Pearson r, and LR vs epoch.
-    --distributions   Violin plots of per-protein RMSE and Pearson r, grouped
-                      by sequence-length and pLDDT bins.  Shows both sparse
-                      (query-point) and full-mesh (complete) metrics.
+    --distributions   Three-panel figure: vertex-level and protein-level ESP
+                      parity plots (with OLS line and R²), plus sequence
+                      length vs full-mesh RMSE.  Colour = net charge,
+                      size = sequence length.
     --visualize       PyVista three-panel view for test proteins: predicted ESP,
                       APBS ground truth, and absolute error on the full mesh.
 

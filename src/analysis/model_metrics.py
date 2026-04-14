@@ -167,6 +167,7 @@ def _build_metrics_df(per_protein: dict, data_root: Path) -> pd.DataFrame:
             "mae":             mae,
             "pearson_r":       pearson_r,
             "sequence_length": meta.get("sequence_length", float("nan")),
+            "net_charge":      meta.get("net_charge",      float("nan")),
             "plddt":           meta.get("plddt_mean",      float("nan")),
             "surface_area":    meta.get("surface_area",    float("nan")),
         })
