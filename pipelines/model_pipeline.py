@@ -4,8 +4,8 @@ pipelines/model_pipeline.py
 Model pipeline for the ProteinStructure ESP project.
 
 Runs the two model-side steps sequentially for a filtered set of proteins:
-    7. Build PyG HeteroData graphs (delegates to scripts/07_build_graphs.py)
-    8. Train and evaluate the ESP prediction model (delegates to scripts/08_train.py)
+    6. Build PyG HeteroData graphs (delegates to pipelines/06_build_graphs.py)
+    7. Train and evaluate the ESP prediction model (delegates to pipelines/07_train.py)
 
 Model architecture and training hyperparameters are read from the `model:` and
 `training:` sections of config.yaml. The most commonly changed values can be
@@ -81,7 +81,7 @@ def _run_script(script: str, extra_args: list[str], nproc: int = 1) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Model pipeline: build PyG graphs (step 7) then train the ESP model (step 8). "
+            "Model pipeline: build PyG graphs (step 6) then train the ESP model (step 7). "
             "Hyperparameter defaults are read from the model: and training: sections of config.yaml."
         )
     )
@@ -131,27 +131,26 @@ def main() -> None:
     filter_args = _collect_filter_args(args)
     data_root_args = ["--data-root", str(data_root)]
 
-    # ── Step 7: Build graphs ──────────────────────────────────────────────────
+    # ── Step 6: Build graphs ──────────────────────────────────────────────────
     if not args.skip_graphs:
-        print("[model_pipeline] Step 7: Building graphs...")
+        print("[model_pipeline] Step 6: Building graphs...")
         graph_args = (
             filter_args
             + data_root_args
-            + ["--sample-frac", str(train_cfg.get("sample_frac", 0.05))]
             + ["--workers", str(args.workers)]
         )
         if args.force:
             graph_args.append("--force")
 
-        ok = _run_script("scripts/07_build_graphs.py", graph_args)
+        ok = _run_script("pipelines/06_build_graphs.py", graph_args)
         if not ok:
-            print("[model_pipeline] Step 7 failed — aborting.")
+            print("[model_pipeline] Step 6 failed — aborting.")
             sys.exit(1)
-        print("[model_pipeline] Step 7: Graphs built.")
+        print("[model_pipeline] Step 6: Graphs built.")
     else:
-        print("[model_pipeline] Step 7: Skipped (--skip-graphs).")
+        print("[model_pipeline] Step 6: Skipped (--skip-graphs).")
 
-    # ── Step 8: Train ─────────────────────────────────────────────────────────
+    # ── Step 7: Train ─────────────────────────────────────────────────────────
     if not args.skip_training:
         try:
             import torch as _torch
@@ -176,7 +175,6 @@ def main() -> None:
                     "--n-bond-radial-rounds",str(model_cfg.get("n_bond_radial_rounds", 2)),
                     "--n-aq-rounds",         str(model_cfg.get("n_aq_rounds",          3)),
                     "--n-qq-rounds",         str(model_cfg.get("n_qq_rounds",          2)),
-                    "--sample-frac",         str(train_cfg.get("sample_frac",          0.05)),
                     "--epochs",              str(args.epochs or train_cfg.get("epochs", 100)),
                     "--max-edges-per-batch", str(train_cfg.get("max_edges_per_batch",  2_000_000)),
                     "--lr",                  str(train_cfg.get("lr",                   3e-4)),
@@ -196,13 +194,13 @@ def main() -> None:
                 if args.resume:
                     train_args += ["--resume", str(args.resume)]
 
-            ok = _run_script("scripts/08_train.py", train_args, nproc=max(1, n_gpus))
+            ok = _run_script("pipelines/07_train.py", train_args, nproc=max(1, n_gpus))
             if not ok:
-                print(f"[model_pipeline] Step 8 ({model_type}) failed — aborting.")
+                print(f"[model_pipeline] Step 7 ({model_type}) failed — aborting.")
                 sys.exit(1)
-            print(f"[model_pipeline] Step 8: {model_type} training complete.")
+            print(f"[model_pipeline] Step 7: {model_type} training complete.")
     else:
-        print("[model_pipeline] Step 8: Skipped (--skip-training).")
+        print("[model_pipeline] Step 7: Skipped (--skip-training).")
 
 
 if __name__ == "__main__":

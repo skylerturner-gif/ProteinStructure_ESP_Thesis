@@ -1,1 +1,0 @@
-# This will be the direct comparisons between ground truth and model predictions. Possibly a heatmap of differences over the proteins

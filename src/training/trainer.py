@@ -366,6 +366,9 @@ def evaluate_test(
     """
     if predictions_dir is not None:
         predictions_dir = Path(predictions_dir)
+        if predictions_dir.exists():
+            for f in predictions_dir.glob("*_pred.npz"):
+                f.unlink()
         predictions_dir.mkdir(parents=True, exist_ok=True)
 
     esp_mean = float(extra_state.get("esp_mean", 0.0))

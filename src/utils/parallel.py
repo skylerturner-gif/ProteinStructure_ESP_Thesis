@@ -70,7 +70,7 @@ def run_parallel(
 
         results = run_parallel(
             _worker,
-            [(pid, str(data_root), sample_frac) for pid in protein_ids],
+            [(pid, str(data_root)) for pid in protein_ids],
             n_workers=8,
             label="graphs",
         )
@@ -121,28 +121,27 @@ def launch_training(
     lr: float              = 3e-4,
     weight_decay: float    = 1e-4,
     pearson_weight: float  = 0.1,
-    sample_frac: float     = 0.05,
     num_workers: int       = 4,
     resume: Path | None    = None,
     train_script: Path | None = None,
 ) -> int:
     """
-    Launch ``scripts/08_train.py`` as a subprocess with the given settings.
+    Launch ``pipelines/07_train.py`` as a subprocess with the given settings.
 
     Training always runs on ``--all`` proteins in *data_root*; graph
     pre-building is expected to be complete before calling this.
 
     Args:
         data_root:   Root of the external data directory.
-        train_script: Path to 08_train.py.  Defaults to
-                      ``<project_root>/scripts/08_train.py``.
-        (remaining): Mirror the CLI flags of 08_train.py.
+        train_script: Path to 07_train.py.  Defaults to
+                      ``<project_root>/pipelines/07_train.py``.
+        (remaining): Mirror the CLI flags of 07_train.py.
 
     Returns:
         Subprocess exit code (0 = success).
     """
     if train_script is None:
-        train_script = Path(__file__).parent.parent.parent / "scripts" / "08_train.py"
+        train_script = Path(__file__).parent.parent.parent / "pipelines" / "07_train.py"
 
     cmd: list[str] = [
         sys.executable, str(train_script),
@@ -160,7 +159,6 @@ def launch_training(
         "--lr",                   str(lr),
         "--weight-decay",         str(weight_decay),
         "--pearson-weight",       str(pearson_weight),
-        "--sample-frac",          str(sample_frac),
         "--num-workers",          str(num_workers),
     ]
     if resume is not None:

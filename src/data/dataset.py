@@ -4,13 +4,13 @@ src/data/dataset.py
 Dataset with disk caching and stratified train/val/test splitting for protein
 ESP graphs.
 
-Graphs are expected to be pre-built by scripts/07_build_graphs.py and cached
+Graphs are expected to be pre-built by pipelines/06_build_graphs.py and cached
 as .pt files under <data_root>/<protein_id>/graph/.  The dataset loads them
 lazily — no graph construction happens at training time unless rebuild=True.
 
 Public API
 ----------
-  ProteinGraphDataset(protein_ids, data_root, *, variant, sample_frac, rebuild, transform)
+  ProteinGraphDataset(protein_ids, data_root, *, rebuild, transform)
   split_dataset(dataset, train, val, seed, pinned_test) -> (train_ds, val_ds, test_ds)
 """
 
@@ -31,7 +31,7 @@ from src.utils.paths import ProteinPaths
 # These are the three reference proteins used throughout development.
 PINNED_TEST_IDS: tuple[str, ...] = (
         "AF-P01082-F1",
-        "AF-Q6P2D8-3-F1",
+        "AF-P68469-F1",
         "AF-Q2ES46-F1",
         "AF-Q6P5X5-F1",
         "AF-Q16613-F1",
@@ -54,13 +54,11 @@ class ProteinGraphDataset(Dataset):
 
     If a cached file is missing and rebuild=True, the graph is built on the
     fly and saved before returning.  During normal training, graphs should be
-    pre-built with scripts/07_build_graphs.py and rebuild=False (default).
+    pre-built with pipelines/06_build_graphs.py and rebuild=False (default).
 
     Args:
         protein_ids:  iterable of protein ID strings (e.g. ["AF-Q16613-F1"])
         data_root:    root of the external data directory
-        sample_frac:  fraction of mesh vertices used as query nodes
-                      (only relevant when rebuilding)
         rebuild:      if True, rebuild and overwrite cached graphs on access
         transform:    optional callable applied to each HeteroData before returning
     """
@@ -70,13 +68,11 @@ class ProteinGraphDataset(Dataset):
         protein_ids,
         data_root: Path,
         *,
-        sample_frac: float = 0.05,
         rebuild: bool = False,
         transform=None,
     ) -> None:
         self.protein_ids = list(protein_ids)
         self.data_root   = Path(data_root)
-        self.sample_frac = sample_frac
         self.rebuild     = rebuild
         self.transform   = transform
 
@@ -91,15 +87,12 @@ class ProteinGraphDataset(Dataset):
         if not graph_path.exists() and not self.rebuild:
             raise FileNotFoundError(
                 f"No cached graph for '{protein_id}'. "
-                f"Run scripts/07_build_graphs.py first, or pass rebuild=True."
+                f"Run pipelines/06_build_graphs.py first, or pass rebuild=True."
             )
 
         if self.rebuild or not graph_path.exists():
             p.ensure_dirs()
-            data = build_graph(
-                protein_id, self.data_root,
-                sample_frac=self.sample_frac,
-            )
+            data = build_graph(protein_id, self.data_root)
             torch.save(data, graph_path)
         else:
             data = torch.load(graph_path, weights_only=False)
@@ -110,9 +103,7 @@ class ProteinGraphDataset(Dataset):
         return data
 
     def __repr__(self) -> str:
-        return (
-            f"ProteinGraphDataset(n={len(self)}, sample_frac={self.sample_frac})"
-        )
+        return f"ProteinGraphDataset(n={len(self)})"
 
 
 # ── Stratified train / val / test split ──────────────────────────────────────
@@ -154,7 +145,7 @@ def _stratified_split(
     train_frac: float,
     val_frac: float,
     rng: np.random.Generator,
-    n_bins: int = 4,
+    n_bins: int = 2,
 ) -> tuple[list[str], list[str], list[str]]:
     """
     Split ids into train / val / test with stratification on
@@ -233,13 +224,20 @@ def split_dataset(
         train_frac=train, val_frac=val, rng=rng,
     )
 
+    # Keep exactly len(pinned) proteins from the pool in test so that
+    # total test = len(pinned) pool proteins + len(pinned) pinned = 2*len(pinned).
+    # Any pool proteins beyond that quota are moved to val.
+    target_pool_test = len(pinned)
+    if len(test_ids) > target_pool_test:
+        val_ids.extend(test_ids[target_pool_test:])
+        test_ids = test_ids[:target_pool_test]
+
     # Pinned proteins always go to test
     test_ids.extend(sorted(pinned))
 
     shared = dict(
-        data_root   = dataset.data_root,
-        sample_frac = dataset.sample_frac,
-        rebuild     = False,
+        data_root = dataset.data_root,
+        rebuild   = False,
     )
 
     return (

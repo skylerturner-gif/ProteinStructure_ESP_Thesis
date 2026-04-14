@@ -6,7 +6,7 @@ Builds the bipartite atom ↔ query-point heterogeneous graph for EGNN training.
 Graph node types
 ----------------
   atom  — all atoms (heavy + H) from the PQR file
-  query — curvature-sampled surface mesh vertices (sample_frac of total)
+  query — curvature-sampled surface mesh vertices (loaded from esp .npz query_idx)
 
 Graph edge types (all directed)
 --------------------------------
@@ -39,7 +39,7 @@ RBF distance ranges (Å)
 
 Public API
 ----------
-  build_graph(protein_id, data_root, *, variant, sample_frac, ...) -> HeteroData
+  build_graph(protein_id, data_root, *, knn_radial, knn_aq, knn_qq, n_rbf) -> HeteroData
   ELEMENT_VOCAB, RESIDUE_VOCAB, N_ELEMENT_TYPES, N_RESIDUE_TYPES  (model constants)
 """
 
@@ -56,7 +56,6 @@ from torch_geometric.data import HeteroData
 
 import MDAnalysis as mda
 
-from src.surface.esp_mapping import curvature_sampling
 from src.utils.helpers import get_logger
 from src.utils.paths import ProteinPaths
 
@@ -256,25 +255,26 @@ def build_graph(
     protein_id: str,
     data_root: Path,
     *,
-    sample_frac: float = 0.05,
     knn_radial: int = 16,
     knn_aq: int = 32,
     knn_qq: int = 8,
     n_rbf: int = 16,
-    rng: np.random.Generator | None = None,
 ) -> HeteroData:
     """
     Build a PyG HeteroData graph for one protein.
 
+    Query nodes are loaded from the canonical query_idx stored in the protein's
+    ESP .npz (written by sample_esp via curvature_sampling).  This guarantees
+    that the same vertex subset is used across graph building, interpolation
+    evaluation, and model training/testing.
+
     Args:
         protein_id:  e.g. "AF-Q16613-F1"
         data_root:   root of the external data directory
-        sample_frac: fraction of mesh vertices to use as query nodes
         knn_radial:  k for radial supplementary atom-atom kNN (bond pairs excluded)
         knn_aq:      k for atom→query edges (query-centric)
         knn_qq:      k for query→query edges
         n_rbf:       number of Gaussian RBF basis functions per edge
-        rng:         optional numpy Generator for curvature_sampling tie-breaking
 
     Returns:
         HeteroData with node types 'atom' and 'query', and edge types
@@ -282,7 +282,7 @@ def build_graph(
         ('atom','aq','query'), ('query','qq','query').
 
     Raises:
-        FileNotFoundError: if PQR or mesh file is missing.
+        FileNotFoundError: if PQR, mesh, or ESP file is missing.
     """
     p = ProteinPaths(protein_id, Path(data_root))
 
@@ -290,6 +290,8 @@ def build_graph(
         raise FileNotFoundError(f"PQR not found: {p.pqr_path}")
     if not p.mesh_path.exists():
         raise FileNotFoundError(f"Mesh not found: {p.mesh_path}")
+    if not p.esp_path.exists():
+        raise FileNotFoundError(f"ESP not found: {p.esp_path}")
 
     # ── 1. Bond graph from PQR ────────────────────────────────────────────────
     log.info("%s  building bond graph", protein_id)
@@ -313,24 +315,19 @@ def build_graph(
         bond_count[i] += 1
         bond_count[j] += 1
 
-    # ── 3. Mesh → query points ────────────────────────────────────────────────
-    log.info("%s  sampling query points (frac=%.2f)", protein_id, sample_frac)
+    # ── 3. Mesh → query points (loaded from canonical query_idx in ESP npz) ───
     mesh     = np.load(p.mesh_path)
     verts    = mesh["verts"]
     faces    = mesh["faces"]
-    ses_area = float(mesh["ses_area"])
 
-    n_query_target = max(1, int(len(verts) * sample_frac))
-    q_idx    = curvature_sampling(verts, faces, n_query_target, ses_area, rng=rng)
+    esp_data  = np.load(p.esp_path)
+    q_idx     = esp_data["query_idx"].astype(np.int64)
     query_xyz = verts[q_idx].astype(np.float32)
     n_query   = len(query_xyz)
+    log.info("%s  loaded %d query points from esp npz", protein_id, n_query)
 
-    # ── 4. ESP target (optional) ──────────────────────────────────────────────
-    esp_path = p.esp_path
-    query_esp: np.ndarray | None = None
-    if esp_path.exists():
-        esp_data  = np.load(esp_path)
-        query_esp = esp_data["esp_verts"][q_idx].astype(np.float32)
+    # ── 4. ESP target ─────────────────────────────────────────────────────────
+    query_esp = esp_data["esp_verts"][q_idx].astype(np.float32)
 
     # ── 5. radial supplementary kNN edges ────────────────────────────────────────────
     log.info("%s  building radial edges (k=%d)", protein_id, knn_radial)
@@ -361,8 +358,7 @@ def build_graph(
 
     # Query nodes
     data["query"].pos = torch.tensor(query_xyz, dtype=torch.float)
-    if query_esp is not None:
-        data["query"].y = torch.tensor(query_esp, dtype=torch.float)
+    data["query"].y   = torch.tensor(query_esp, dtype=torch.float)
 
     # Covalent edges: [bond_order | rbf_dist]
     bond_attr = np.concatenate([bond_orders[:, None], bond_rbf], axis=1)
