@@ -25,6 +25,7 @@ import torch
 from torch.utils.data import Dataset
 
 from src.data.graph_builder import build_graph
+from src.utils.config import get_config
 from src.utils.io import load_metadata
 from src.utils.paths import ProteinPaths
 
@@ -101,6 +102,15 @@ class ProteinGraphDataset(Dataset):
             torch.save(data, graph_path)
         else:
             data = torch.load(graph_path, weights_only=False)
+            current_spec = get_config().get("features", {})
+            cached_spec  = getattr(data, "feature_spec", None)
+            if cached_spec is not None and cached_spec != current_spec:
+                raise RuntimeError(
+                    f"Feature spec mismatch for '{protein_id}'.\n"
+                    f"  Cached: {cached_spec}\n"
+                    f"  Config: {current_spec}\n"
+                    "Rebuild graphs with pipelines/06_build_graphs.py --all --force"
+                )
 
         if self.transform is not None:
             data = self.transform(data)

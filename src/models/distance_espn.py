@@ -23,6 +23,7 @@ from torch_geometric.data import HeteroData
 
 from src.models.egnn import (
     AtomEncoder,
+    QueryEncoder,
     MessageLayer,
     _AtomMP,
     _QueryRefine,
@@ -37,11 +38,15 @@ class DistanceESPN(nn.Module):
     Fully distance-based ESP prediction model.
 
     Args:
-        hidden_dim:        node feature dimensionality (default 128)
-        n_rbf:             RBF basis functions per edge (default 16)
+        hidden_dim:           node feature dimensionality (default 128)
+        n_rbf:                RBF basis functions per edge (default 16)
         n_bond_radial_rounds: Stage 1 rounds (default 2)
-        n_aq_rounds:       Stage 2 rounds (default 3)
-        n_qq_rounds:       Stage 3 rounds (default 2)
+        n_aq_rounds:          Stage 2 rounds (default 3)
+        n_qq_rounds:          Stage 3 rounds (default 2)
+        multi_agg:            use mean+sum+max aggregation in all MessageLayers
+                              (default False)
+        has_curvature:        query nodes carry a curvature scalar (default False)
+        has_normal:           query nodes carry a surface normal 3-vector (default False)
     """
 
     def __init__(
@@ -49,18 +54,25 @@ class DistanceESPN(nn.Module):
         hidden_dim: int = 128,
         n_rbf:      int = 16,
         n_bond_radial_rounds: int = 2,
-        n_aq_rounds:       int = 3,
-        n_qq_rounds:       int = 2,
+        n_aq_rounds:          int = 3,
+        n_qq_rounds:          int = 2,
+        multi_agg:            bool = False,
+        has_curvature:        bool = False,
+        has_normal:           bool = False,
     ) -> None:
         super().__init__()
-        self.hidden_dim = hidden_dim
+        self.hidden_dim  = hidden_dim
+        self.n_aq_rounds = n_aq_rounds
 
-        self.n_aq_rounds  = n_aq_rounds
-        self.atom_encoder = AtomEncoder(hidden_dim)
-        self.atom_mp      = _AtomMP(hidden_dim, n_rbf, n_bond_radial_rounds)
-        self.aq_layer     = MessageLayer(hidden_dim, n_rbf)
-        self.query_refine = _QueryRefine(hidden_dim, n_rbf, n_qq_rounds)
-        self.output_head  = _mlp([hidden_dim, hidden_dim // 2, 1])
+        self.atom_encoder  = AtomEncoder(hidden_dim)
+        self.atom_mp       = _AtomMP(hidden_dim, n_rbf, n_bond_radial_rounds, multi_agg=multi_agg)
+        self.aq_layer      = MessageLayer(hidden_dim, n_rbf, multi_agg=multi_agg)
+        self.query_refine  = _QueryRefine(hidden_dim, n_rbf, n_qq_rounds, multi_agg=multi_agg)
+        self.output_head   = _mlp([hidden_dim, hidden_dim // 2, 1])
+        self.query_encoder = (
+            QueryEncoder(hidden_dim, has_curvature, has_normal)
+            if (has_curvature or has_normal) else None
+        )
 
     def forward(self, data: HeteroData) -> Tensor:
         # Stage 1 — atom encoder
@@ -70,7 +82,9 @@ class DistanceESPN(nn.Module):
         # Stage 2 — atom→query (mean aggregation, shared weights)
         n_query = data["query"].pos.shape[0]
         h_query = torch.zeros(n_query, self.hidden_dim, device=h_atom.device)
-        aq      = data["atom", "aq", "query"]
+        if self.query_encoder is not None:
+            h_query = h_query + self.query_encoder(data)
+        aq = data["atom", "aq", "query"]
         for _ in range(self.n_aq_rounds):
             h_query = self.aq_layer(h_atom, h_query, aq.edge_index, aq.edge_attr, n_query)
 
