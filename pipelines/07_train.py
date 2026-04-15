@@ -22,6 +22,7 @@ optimizer/scheduler state, and ESP normalization statistics (esp_mean, esp_std).
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 import torch
@@ -33,7 +34,7 @@ from src.data.transform import NormalizeESP, compute_esp_stats
 from src.models.attention_espn import AttentionESPN
 from src.models.distance_espn import DistanceESPN
 from src.training.loss import ESPLoss
-from src.training.trainer import Trainer
+from src.training.trainer import Trainer, evaluate_test as run_evaluate_test
 from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger
 
@@ -54,6 +55,20 @@ def build_model(args, device: torch.device):
 
 
 def main() -> None:
+    # ── Auto multi-GPU ────────────────────────────────────────────────────────
+    # If we are not already inside a torchrun launch (LOCAL_RANK not set) and
+    # multiple CUDA devices are available, re-exec this script via torchrun so
+    # that DDP is configured automatically.  This makes direct `python 07_train.py`
+    # invocations behave the same as going through model_pipeline.py.
+    if "LOCAL_RANK" not in os.environ:
+        n_gpus = torch.cuda.device_count()
+        if n_gpus > 1:
+            cmd = [
+                sys.executable, "-m", "torch.distributed.run",
+                f"--nproc_per_node={n_gpus}",
+            ] + sys.argv
+            sys.exit(__import__("subprocess").run(cmd).returncode)
+
     parser = argparse.ArgumentParser(
         description="Train DistanceESPN or AttentionESPN on protein ESP graphs."
     )
@@ -69,7 +84,7 @@ def main() -> None:
         help="Model architecture to train.",
     )
     # ── Architecture ──────────────────────────────────────────────────────────
-    parser.add_argument("--hidden-dim",        type=int,   default=128)
+    parser.add_argument("--hidden-dim",        type=int,   default=256)
     parser.add_argument("--n-rbf",             type=int,   default=16)
     parser.add_argument("--n-heads",           type=int,   default=4,
                         help="Attention heads (attention model only).")
@@ -102,7 +117,12 @@ def main() -> None:
     # ── I/O ───────────────────────────────────────────────────────────────────
     parser.add_argument(
         "--checkpoint-dir", type=Path, default=None,
-        help="Directory for checkpoints. Defaults to <data_root>/../checkpoints/<model>.",
+        help="Directory for checkpoints. Defaults to <data_root>/../checkpoints/<model>[_suffix].",
+    )
+    parser.add_argument(
+        "--suffix", type=str, default=None,
+        help="Label appended to the default checkpoint dir name, e.g. "
+             "'base' → checkpoints/attention_base. No effect if --checkpoint-dir is set.",
     )
     parser.add_argument(
         "--resume", type=Path, default=None,
@@ -110,6 +130,29 @@ def main() -> None:
     )
     parser.add_argument("--num-workers", type=int, default=0,
                         help="DataLoader worker processes (0 = main process).")
+
+    # ── Inject config.yaml values as defaults (CLI still overrides) ──────────
+    # Priority: CLI flag > config.yaml > argparse default
+    _cfg       = get_config()
+    _model_cfg = _cfg.get("model",    {})
+    _train_cfg = _cfg.get("training", {})
+
+    _config_defaults = {k: v for k, v in {
+        "hidden_dim":           _model_cfg.get("hidden_dim"),
+        "n_rbf":                _model_cfg.get("n_rbf"),
+        "n_heads":              _model_cfg.get("n_heads"),
+        "n_bond_radial_rounds": _model_cfg.get("n_bond_radial_rounds"),
+        "n_aq_rounds":          _model_cfg.get("n_aq_rounds"),
+        "n_qq_rounds":          _model_cfg.get("n_qq_rounds"),
+        "epochs":               _train_cfg.get("epochs"),
+        "max_edges_per_batch":  _train_cfg.get("max_edges_per_batch"),
+        "lr":                   _train_cfg.get("lr"),
+        "weight_decay":         _train_cfg.get("weight_decay"),
+        "pearson_weight":       _train_cfg.get("pearson_weight"),
+        "clip_grad":            _train_cfg.get("clip_grad"),
+        "lr_patience":          _train_cfg.get("lr_patience"),
+    }.items() if v is not None}
+    parser.set_defaults(**_config_defaults)
 
     args = parser.parse_args()
 
@@ -136,8 +179,9 @@ def main() -> None:
     data_root = args.data_root or get_data_root()
     log       = get_pipeline_logger(Path(cfg["paths"]["log_file"]))
 
-    ckpt_dir = args.checkpoint_dir or (
-        Path(data_root).parent / "checkpoints" / args.model
+    base_name = f"{args.model}_{args.suffix}" if args.suffix else args.model
+    ckpt_dir  = args.checkpoint_dir or (
+        Path(data_root).parent / "checkpoints" / base_name
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -249,7 +293,7 @@ def main() -> None:
     if rank == 0:
         log.info(
             "Training %s on %d proteins for %d epochs",
-            args.model, len(protein_ids), args.epochs,
+            args.model, len(train_ids) + len(val_ids) + len(test_ids), args.epochs,
         )
 
     trainer.fit(train_loader, val_loader, n_epochs=args.epochs)
@@ -264,7 +308,11 @@ def main() -> None:
             Trainer.load_checkpoint(ckpt_dir / "best_model.pt", raw_model)
 
             pred_dir = ckpt_dir / "test_predictions"
-            results  = trainer.evaluate_test(test_ds, predictions_dir=pred_dir)
+            results  = run_evaluate_test(
+                raw_model, loss_fn, test_ds, device, trainer.extra_state,
+                checkpoint_dir  = ckpt_dir,
+                predictions_dir = pred_dir,
+            )
 
             g = results["global"]
             print(

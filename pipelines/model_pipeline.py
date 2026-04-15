@@ -38,7 +38,6 @@ import sys
 from pathlib import Path
 
 from src.utils.config import get_config, get_data_root
-from src.utils.filter import add_filter_args
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,8 +85,18 @@ def main() -> None:
         )
     )
 
-    # ── Protein selection ─────────────────────────────────────────────────────
-    add_filter_args(parser)
+    # ── Protein selection (only required when building graphs) ───────────────
+    group = parser.add_mutually_exclusive_group(required=False)
+    group.add_argument("--all",    action="store_true", dest="select_all",
+                       help="Build graphs for all proteins with valid metadata.")
+    group.add_argument("--filter", action="store_true", dest="use_filter",
+                       help="Build graphs for proteins matching the filter criteria.")
+    parser.add_argument("--min-sequence-length", type=int,   default=None)
+    parser.add_argument("--max-sequence-length", type=int,   default=None)
+    parser.add_argument("--min-plddt",           type=float, default=None)
+    parser.add_argument("--max-plddt",           type=float, default=None)
+    parser.add_argument("--min-surface-area",    type=float, default=None)
+    parser.add_argument("--max-surface-area",    type=float, default=None)
     parser.add_argument("--data-root", type=Path, default=None,
                         help="Override data_root from config.yaml.")
 
@@ -115,8 +124,12 @@ def main() -> None:
                         help="LR scheduler (default: cosine).")
     parser.add_argument("--checkpoint-dir", type=Path, default=None,
                         help="Directory for checkpoints. "
-                             "Defaults to <data_root>/../checkpoints/<model>. "
+                             "Defaults to <data_root>/../checkpoints/<model>[_suffix]. "
                              "Ignored when --model both (each model uses its own subdir).")
+    parser.add_argument("--suffix", type=str, default=None,
+                        help="Label appended to the checkpoint directory name, e.g. "
+                             "'base' → checkpoints/attention_base. "
+                             "Has no effect when --checkpoint-dir is set explicitly.")
     parser.add_argument("--resume", type=Path, default=None,
                         help="Path to a checkpoint to resume training from. "
                              "Ignored when --model both.")
@@ -130,6 +143,10 @@ def main() -> None:
 
     filter_args = _collect_filter_args(args)
     data_root_args = ["--data-root", str(data_root)]
+
+    # ── Validate filter args when graph building is needed ───────────────────
+    if not args.skip_graphs and not args.select_all and not args.use_filter:
+        parser.error("--all or --filter is required when building graphs (omit with --skip-graphs).")
 
     # ── Step 6: Build graphs ──────────────────────────────────────────────────
     if not args.skip_graphs:
@@ -164,11 +181,18 @@ def main() -> None:
         for model_type in model_types:
             print(f"[model_pipeline] Step 8: Training {model_type} model...")
 
+            # Resolve checkpoint dir: explicit > suffix-derived > default
+            if args.checkpoint_dir and len(model_types) == 1:
+                ckpt_dir = args.checkpoint_dir
+            else:
+                base_name = f"{model_type}_{args.suffix}" if args.suffix else model_type
+                ckpt_dir  = Path(data_root).parent / "checkpoints" / base_name
+
             train_args = (
-                filter_args
-                + data_root_args
+                data_root_args
                 + [
                     "--model",               model_type,
+                    "--checkpoint-dir",      str(ckpt_dir),
                     "--hidden-dim",          str(model_cfg.get("hidden_dim",           256)),
                     "--n-rbf",               str(model_cfg.get("n_rbf",                16)),
                     "--n-heads",             str(model_cfg.get("n_heads",              4)),
@@ -182,17 +206,10 @@ def main() -> None:
                     "--pearson-weight",      str(train_cfg.get("pearson_weight",       0.1)),
                     "--clip-grad",           str(train_cfg.get("clip_grad",            1.0)),
                     "--lr-patience",         str(train_cfg.get("lr_patience",          15)),
-                    "--train-frac",          str(train_cfg.get("train_frac",           0.8)),
-                    "--val-frac",            str(train_cfg.get("val_frac",             0.1)),
-                    "--split-seed",          str(train_cfg.get("split_seed",           42)),
                 ]
             )
-            # --checkpoint-dir and --resume are only passed for single-model runs
-            if len(model_types) == 1:
-                if args.checkpoint_dir:
-                    train_args += ["--checkpoint-dir", str(args.checkpoint_dir)]
-                if args.resume:
-                    train_args += ["--resume", str(args.resume)]
+            if args.resume and len(model_types) == 1:
+                train_args += ["--resume", str(args.resume)]
 
             ok = _run_script("pipelines/07_train.py", train_args, nproc=max(1, n_gpus))
             if not ok:

@@ -57,6 +57,11 @@ def main() -> None:
         help="Model type — used to infer checkpoint dir if --checkpoint-dir is not set.",
     )
     parser.add_argument(
+        "--suffix", type=str, default=None,
+        help="Suffix appended to checkpoint dir name, e.g. 'base' → checkpoints/attention_base. "
+             "Ignored when --checkpoint-dir is set explicitly.",
+    )
+    parser.add_argument(
         "--checkpoint-dir", type=Path, default=None,
         help="Checkpoint directory (contains metrics.csv, test_metrics.json, "
              "test_predictions/).",
@@ -102,7 +107,8 @@ def main() -> None:
     if args.checkpoint_dir:
         ckpt_dir = args.checkpoint_dir
     elif args.model:
-        ckpt_dir = Path(data_root).parent / "checkpoints" / args.model
+        base_name = f"{args.model}_{args.suffix}" if args.suffix else args.model
+        ckpt_dir = Path(data_root).parent / "checkpoints" / base_name
     else:
         parser.error("Provide --model or --checkpoint-dir.")
 
