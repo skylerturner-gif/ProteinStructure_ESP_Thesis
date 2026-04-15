@@ -376,11 +376,12 @@ def plot_distributions(
 
     # ── Full-mesh (complete) metrics ──────────────────────────────────────────
     print("  Computing full-mesh metrics (RBF reconstruction for each test protein)...")
-    full_per_protein = compute_full_mesh_metrics(
+    full_result      = compute_full_mesh_metrics(
         ckpt_dir, data_root,
         reconstruction=reconstruction,
         force=force_recompute,
     )
+    full_per_protein = full_result.get("per_protein", {})
 
     if not sparse_per_protein and not full_per_protein:
         print("  [distributions] No metrics available.")

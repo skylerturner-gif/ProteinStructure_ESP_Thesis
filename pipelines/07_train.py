@@ -21,8 +21,10 @@ optimizer/scheduler state, and ESP normalization statistics (esp_mean, esp_std).
 """
 
 import argparse
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -39,13 +41,16 @@ from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger
 
 
-def build_model(args, device: torch.device):
+def build_model(args, device: torch.device, feat_cfg: dict, model_cfg: dict):
     common = dict(
         hidden_dim           = args.hidden_dim,
         n_rbf                = args.n_rbf,
         n_bond_radial_rounds = args.n_bond_radial_rounds,
         n_aq_rounds          = args.n_aq_rounds,
         n_qq_rounds          = args.n_qq_rounds,
+        multi_agg            = model_cfg.get("multi_agg",      False),
+        has_curvature        = feat_cfg.get("query_curvature", False),
+        has_normal           = feat_cfg.get("query_normal",    False),
     )
     if args.model == "distance":
         model = DistanceESPN(**common)
@@ -236,7 +241,9 @@ def main() -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────────
-    model = build_model(args, device)
+    feat_cfg  = cfg.get("features", {})
+    model_cfg = cfg.get("model",    {})
+    model = build_model(args, device, feat_cfg, model_cfg)
     if ddp:
         from torch.nn.parallel import DistributedDataParallel
         model = DistributedDataParallel(model, device_ids=[local_rank])
@@ -286,7 +293,9 @@ def main() -> None:
                 "n_bond_radial_rounds": args.n_bond_radial_rounds,
                 "n_aq_rounds":          args.n_aq_rounds,
                 "n_qq_rounds":          args.n_qq_rounds,
+                "multi_agg":            model_cfg.get("multi_agg", False),
             },
+            "feature_spec": feat_cfg,
         },
     )
 
@@ -296,7 +305,9 @@ def main() -> None:
             args.model, len(train_ids) + len(val_ids) + len(test_ids), args.epochs,
         )
 
+    t_train_start = time.perf_counter()
     trainer.fit(train_loader, val_loader, n_epochs=args.epochs)
+    train_wall_seconds = time.perf_counter() - t_train_start
 
     # ── Test evaluation (rank 0 only) ─────────────────────────────────────────
     if not ddp or rank == 0:
@@ -314,13 +325,22 @@ def main() -> None:
                 predictions_dir = pred_dir,
             )
 
+            # Inject wall-clock training time into the global metrics and re-save.
+            results["global"]["train_wall_time_s"] = round(train_wall_seconds, 1)
+            metrics_path = ckpt_dir / "test_metrics.json"
+            with open(metrics_path, "w") as f:
+                json.dump(results, f, indent=2)
+
             g = results["global"]
+            h, m = divmod(int(train_wall_seconds), 3600)
+            m, s = divmod(m, 60)
             print(
                 f"\nTest results  (best checkpoint, {g['n_proteins']} proteins)\n"
                 f"  Loss:      {g['loss']:.4f}\n"
                 f"  RMSE:      {g['rmse']:.4f} kT/e\n"
                 f"  MAE:       {g['mae']:.4f} kT/e\n"
                 f"  Pearson r: {g['pearson_r']:.4f}\n"
+                f"  Train time: {h:02d}:{m:02d}:{s:02d}\n"
             )
 
             pp     = results["per_protein"]

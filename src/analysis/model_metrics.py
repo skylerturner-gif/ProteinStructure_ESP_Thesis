@@ -62,14 +62,22 @@ def compute_full_mesh_metrics(
         force:          ignore cache and recompute from scratch
 
     Returns:
-        Per-protein dict keyed by protein_id, each entry containing:
-            complete_rmse, complete_pearson_r, mae, n_verts
+        Dict with two keys:
+            "global"      — {rmse, mae, pearson_r, n_proteins} aggregated across
+                            all test proteins (vertex-count-weighted for rmse/mae,
+                            mean for pearson_r)
+            "per_protein" — {protein_id: {complete_rmse, complete_pearson_r,
+                                          mae, n_verts}}
     """
     cache_path = ckpt_dir / "test_metrics_fullmesh.json"
     if cache_path.exists() and not force:
         print(f"  [full-mesh] Loading cached metrics ({cache_path.name})")
         with open(cache_path) as f:
-            return json.load(f)
+            data = json.load(f)
+        # Handle old format (flat per-protein dict without "global" key)
+        if "per_protein" not in data:
+            data = {"global": {}, "per_protein": data}
+        return data
 
     pred_dir = ckpt_dir / "test_predictions"
     if not pred_dir.exists():
@@ -128,11 +136,40 @@ def compute_full_mesh_metrics(
         }
         print(f"r={complete_pearson:.4f}  rmse={complete_rmse:.4f}")
 
-    with open(cache_path, "w") as f:
-        json.dump(per_protein, f, indent=2)
-    print(f"  [full-mesh] Cached → {cache_path}")
+    # ── Global aggregates ─────────────────────────────────────────────────────
+    # RMSE and MAE are vertex-count-weighted; Pearson r is the mean over proteins.
+    total_sq_err  = 0.0
+    total_abs_err = 0.0
+    total_verts   = 0
+    pearson_vals  = []
+    for m in per_protein.values():
+        n = m["n_verts"]
+        total_sq_err  += m["complete_rmse"]      ** 2 * n
+        total_abs_err += m["mae"]                     * n
+        total_verts   += n
+        pearson_vals.append(m["complete_pearson_r"])
 
-    return per_protein
+    global_metrics = {
+        "rmse":       round(float((total_sq_err  / max(total_verts, 1)) ** 0.5), 5),
+        "mae":        round(float( total_abs_err  / max(total_verts, 1)),         5),
+        "pearson_r":  round(float(np.mean(pearson_vals)) if pearson_vals else 0.0, 5),
+        "n_proteins": len(per_protein),
+    }
+
+    result = {"global": global_metrics, "per_protein": per_protein}
+
+    with open(cache_path, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"  [full-mesh] Cached → {cache_path}")
+    print(
+        f"  [full-mesh] Global — "
+        f"RMSE={global_metrics['rmse']:.4f}  "
+        f"MAE={global_metrics['mae']:.4f}  "
+        f"Pearson r={global_metrics['pearson_r']:.4f}  "
+        f"({global_metrics['n_proteins']} proteins)"
+    )
+
+    return result
 
 
 def _build_metrics_df(per_protein: dict, data_root: Path) -> pd.DataFrame:

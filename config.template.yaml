@@ -46,6 +46,10 @@ environments:
 
 # Default model architecture.
 # All values can be overridden via CLI flags in pipelines/model_pipeline.py.
+features:
+  query_curvature: false  # mean curvature scalar on each surface vertex (requires graph rebuild)
+  query_normal:    false  # unit surface normal 3-vector on each surface vertex (requires graph rebuild)
+
 model:
   type:                 attention   # distance | attention
   hidden_dim:           128
@@ -54,6 +58,7 @@ model:
   n_bond_radial_rounds: 2
   n_aq_rounds:          3
   n_qq_rounds:          2
+  multi_agg:            false       # mean+sum+max aggregation in MessageLayer (no graph rebuild needed)
 
 # Default training hyperparameters.
 # All values can be overridden via CLI flags in pipelines/model_pipeline.py.

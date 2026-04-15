@@ -56,6 +56,7 @@ from torch_geometric.data import HeteroData
 
 import MDAnalysis as mda
 
+from src.utils.config import get_config
 from src.utils.helpers import get_logger
 from src.utils.paths import ProteinPaths
 
@@ -249,6 +250,88 @@ def _rbf_encode(
     return np.exp(-((d - centers) ** 2) / (sigma ** 2))
 
 
+# ── Surface geometry helpers ──────────────────────────────────────────────────
+
+def _compute_vertex_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """
+    Area-weighted vertex normals from face geometry.
+
+    For each face the unnormalised normal (whose magnitude equals twice the
+    face area) is accumulated into each of the three incident vertices.
+    Vertex normals are then unit-normalised.
+
+    Args:
+        verts: (V, 3) float32 vertex positions
+        faces: (F, 3) int   face vertex indices
+
+    Returns:
+        (V, 3) float32 unit vertex normals
+    """
+    v0 = verts[faces[:, 0]]
+    v1 = verts[faces[:, 1]]
+    v2 = verts[faces[:, 2]]
+    fn = np.cross(v1 - v0, v2 - v0)          # (F, 3) — magnitude = 2 × area
+    vn = np.zeros_like(verts, dtype=np.float64)
+    np.add.at(vn, faces[:, 0], fn)
+    np.add.at(vn, faces[:, 1], fn)
+    np.add.at(vn, faces[:, 2], fn)
+    norms = np.linalg.norm(vn, axis=-1, keepdims=True)
+    return (vn / np.maximum(norms, 1e-8)).astype(np.float32)
+
+
+def _compute_mean_curvature(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """
+    Discrete mean curvature magnitude via the cotangent Laplacian.
+
+    Uses the standard formula H_i = |Δ x_i| / 2 where Δ is the
+    cotangent-weighted Laplace–Beltrami operator.  Mixed area is
+    approximated as one third of the sum of incident triangle areas.
+
+    Args:
+        verts: (V, 3) float32 vertex positions
+        faces: (F, 3) int   face vertex indices
+
+    Returns:
+        (V,) float32 mean curvature magnitudes (always ≥ 0)
+    """
+    N  = len(verts)
+    v0 = verts[faces[:, 0]].astype(np.float64)
+    v1 = verts[faces[:, 1]].astype(np.float64)
+    v2 = verts[faces[:, 2]].astype(np.float64)
+
+    # Edge vectors originating at each corner
+    e01, e02 = v1 - v0, v2 - v0
+    e10, e12 = v0 - v1, v2 - v1
+    e20, e21 = v0 - v2, v1 - v2
+
+    def _cot(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """Cotangent of angle between vectors a and b (per-face array)."""
+        cross_sq = (np.cross(a, b) ** 2).sum(-1)
+        cos_val  = (a * b).sum(-1)
+        return cos_val / (np.sqrt(cross_sq) + 1e-8)
+
+    cot0 = _cot(e01, e02)   # cot at corner 0 (across from edge 1–2)
+    cot1 = _cot(e10, e12)   # cot at corner 1 (across from edge 0–2)
+    cot2 = _cot(e20, e21)   # cot at corner 2 (across from edge 0–1)
+
+    # Laplacian of positions (Σ_j cot_weights × (x_j - x_i))
+    L = np.zeros((N, 3), dtype=np.float64)
+    np.add.at(L, faces[:, 0], cot2[:, None] * (v1 - v0) + cot1[:, None] * (v2 - v0))
+    np.add.at(L, faces[:, 1], cot2[:, None] * (v0 - v1) + cot0[:, None] * (v2 - v1))
+    np.add.at(L, faces[:, 2], cot1[:, None] * (v0 - v2) + cot0[:, None] * (v1 - v2))
+
+    # Mixed area ≈ one third of sum of incident triangle areas
+    face_areas = 0.5 * np.linalg.norm(np.cross(e01, e02), axis=-1)
+    A = np.zeros(N, dtype=np.float64)
+    np.add.at(A, faces[:, 0], face_areas / 3.0)
+    np.add.at(A, faces[:, 1], face_areas / 3.0)
+    np.add.at(A, faces[:, 2], face_areas / 3.0)
+
+    # H = |L x| / (2 A)
+    Hn = L / (2.0 * A[:, None] + 1e-8)
+    return np.linalg.norm(Hn, axis=-1).astype(np.float32)
+
+
 # ── Main public function ──────────────────────────────────────────────────────
 
 def build_graph(
@@ -280,10 +363,15 @@ def build_graph(
         HeteroData with node types 'atom' and 'query', and edge types
         ('atom','bond','atom'), ('atom','radial','atom'),
         ('atom','aq','query'), ('query','qq','query').
+        Optional query node attributes (enabled via config.yaml features:):
+          query.curvature — (N_q,)    mean curvature magnitude
+          query.normal    — (N_q, 3)  unit surface normal
+        data.feature_spec — dict copy of the features: config block.
 
     Raises:
         FileNotFoundError: if PQR, mesh, or ESP file is missing.
     """
+    feat_cfg = get_config().get("features", {})
     p = ProteinPaths(protein_id, Path(data_root))
 
     if not p.pqr_path.exists():
@@ -360,6 +448,17 @@ def build_graph(
     data["query"].pos = torch.tensor(query_xyz, dtype=torch.float)
     data["query"].y   = torch.tensor(query_esp, dtype=torch.float)
 
+    # Optional surface geometry features (controlled by config.yaml features:)
+    if feat_cfg.get("query_normal", False):
+        normals = _compute_vertex_normals(verts, faces)
+        data["query"].normal = torch.tensor(normals[q_idx], dtype=torch.float)
+        log.info("%s  attached surface normals to query nodes", protein_id)
+
+    if feat_cfg.get("query_curvature", False):
+        curvature = _compute_mean_curvature(verts, faces)
+        data["query"].curvature = torch.tensor(curvature[q_idx], dtype=torch.float)
+        log.info("%s  attached mean curvature to query nodes", protein_id)
+
     # Covalent edges: [bond_order | rbf_dist]
     bond_attr = np.concatenate([bond_orders[:, None], bond_rbf], axis=1)
     data["atom", "bond", "atom"].edge_index = torch.tensor(
@@ -386,9 +485,10 @@ def build_graph(
     data["query", "qq", "query"].edge_attr = torch.tensor(qq_rbf, dtype=torch.float)
 
     # Metadata
-    data.protein_id = protein_id
-    data.n_atoms    = n_atoms
-    data.n_query    = n_query
+    data.protein_id   = protein_id
+    data.n_atoms      = n_atoms
+    data.n_query      = n_query
+    data.feature_spec = {k: bool(v) for k, v in feat_cfg.items()}
 
     log.info(
         "%s  graph built: atoms=%d  query=%d  bond=%d  radial=%d  aq=%d  qq=%d",

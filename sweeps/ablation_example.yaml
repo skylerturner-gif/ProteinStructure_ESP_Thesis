@@ -1,0 +1,99 @@
+# sweeps/ablation_example.yaml
+#
+# 8-run ablation sweep: 4 feature configurations x 2 model types.
+#
+# Runs are ordered so graphs are rebuilt only when query node features change
+# (query_curvature / query_normal).  Attention and distance are paired per
+# configuration so each rebuild serves both model types.
+#
+# Rebuild schedule (auto-detected):
+#   base_attention      → no rebuild (first run)
+#   base_distance       → no rebuild (same features as previous)
+#   norm_curv_attention → REBUILD (features changed)
+#   norm_curv_distance  → no rebuild
+#   multi_attention     → REBUILD (features changed)
+#   multi_distance      → no rebuild
+#   both_attention      → REBUILD (features changed)
+#   both_distance       → no rebuild
+#
+# Usage:
+#   python pipelines/run_sweep.py sweeps/ablation_example.yaml --all --dry-run
+#   nohup python -u pipelines/run_sweep.py sweeps/ablation_example.yaml --all \
+#       > nohup_sweep.out 2>&1 &
+
+runs:
+  # ── Base: no query node features, single mean aggregation ────────────────────
+  - suffix: base_attention
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      multi_agg: false
+    train:
+      model: attention
+
+  - suffix: base_distance
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      multi_agg: false
+    train:
+      model: distance
+
+  # ── Norm + curv: query node features, single mean aggregation ────────────────
+  - suffix: norm_curv_attention
+    features:
+      query_curvature: true
+      query_normal:    true
+    model:
+      multi_agg: false
+    train:
+      model: attention
+
+  - suffix: norm_curv_distance
+    features:
+      query_curvature: true
+      query_normal:    true
+    model:
+      multi_agg: false
+    train:
+      model: distance
+
+  # ── Multi: no query node features, mean+sum+max aggregation ─────────────────
+  - suffix: multi_attention
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      multi_agg: true
+    train:
+      model: attention
+
+  - suffix: multi_distance
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      multi_agg: true
+    train:
+      model: distance
+
+  # ── Both: query node features + mean+sum+max aggregation ────────────────────
+  - suffix: both_attention
+    features:
+      query_curvature: true
+      query_normal:    true
+    model:
+      multi_agg: true
+    train:
+      model: attention
+
+  - suffix: both_distance
+    features:
+      query_curvature: true
+      query_normal:    true
+    model:
+      multi_agg: true
+    train:
+      model: distance
