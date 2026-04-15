@@ -306,7 +306,7 @@ class Trainer:
         Returns the full checkpoint dict so the caller can access esp_mean,
         esp_std, epoch, and val metrics.
         """
-        ckpt = torch.load(path, weights_only=False)
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model_state"])
         if optimizer is not None and "optimizer_state" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state"])
