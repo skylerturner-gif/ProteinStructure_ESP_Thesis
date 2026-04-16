@@ -56,6 +56,9 @@ class AQAttentionLayer(nn.Module):
             )
         self.n_heads = n_heads
         self.d_head  = hidden_dim // n_heads
+        # Set to True (monkey-patch) before inference to store alpha in _last_attn.
+        self.return_attn: bool = False
+        self._last_attn: Tensor | None = None
 
         self.Q        = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.K        = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -88,6 +91,8 @@ class AQAttentionLayer(nn.Module):
         msgs  = (alpha.unsqueeze(-1) * V).reshape(E, H * d)
         agg   = scatter(msgs, dst_idx, dim=0, dim_size=n_query, reduce="sum")
         delta = self.update_mlp(torch.cat([h_query, agg], dim=-1))
+        if self.return_attn:
+            self._last_attn = alpha.detach()
         return self.norm(h_query + delta)
 
 
