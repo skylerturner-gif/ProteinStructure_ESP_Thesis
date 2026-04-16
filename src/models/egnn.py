@@ -106,7 +106,7 @@ class QueryEncoder(nn.Module):
     def forward(self, data: HeteroData) -> Tensor:
         parts: list[Tensor] = []
         if hasattr(data["query"], "curvature"):
-            parts.append(data["query"].curvature.unsqueeze(-1))
+            parts.append(data["query"].curvature.log1p().unsqueeze(-1))
         if hasattr(data["query"], "normal"):
             parts.append(data["query"].normal)
         return self.proj(torch.cat(parts, dim=-1))

@@ -138,6 +138,9 @@ def main() -> None:
                              "dominance in greedy batches.")
     parser.add_argument("--grad-accum-steps", type=int, default=None,
                         help="Gradient accumulation steps (1 = disabled).")
+    parser.add_argument("--early-stopping-patience", type=int, default=None,
+                        help="Stop training after this many epochs with no val loss improvement "
+                             "(0 or omit to disable).")
 
     args = parser.parse_args()
 
@@ -220,6 +223,11 @@ def main() -> None:
             accum = args.grad_accum_steps or train_cfg.get("grad_accum_steps", 1)
             if accum and accum > 1:
                 train_args += ["--grad-accum-steps", str(accum)]
+            es = args.early_stopping_patience
+            if es is None:
+                es = train_cfg.get("early_stopping_patience", 0)
+            if es and es > 0:
+                train_args += ["--early-stopping-patience", str(es)]
 
             ok = _run_script("pipelines/07_train.py", train_args, nproc=max(1, n_gpus))
             if not ok:
