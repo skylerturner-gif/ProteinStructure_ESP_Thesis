@@ -80,7 +80,8 @@ def _features_changed(prev: dict | None, curr: dict) -> bool:
 
 def _build_cmd(run: dict, filter_args: list[str], rebuild: bool) -> list[str]:
     """Build the model_pipeline.py subprocess command for one run."""
-    train = run.get("train", {})
+    train    = run.get("train",    {})
+    training = run.get("training", {})
     cmd = [
         sys.executable, str(_PROJECT_ROOT / "pipelines" / "model_pipeline.py"),
     ]
@@ -93,6 +94,12 @@ def _build_cmd(run: dict, filter_args: list[str], rebuild: bool) -> list[str]:
         cmd += ["--epochs", str(train["epochs"])]
     if train.get("lr_scheduler"):
         cmd += ["--lr-scheduler", train["lr_scheduler"]]
+
+    if training.get("protein_weighted", False):
+        cmd.append("--protein-weighted")
+    accum = training.get("grad_accum_steps", 1)
+    if accum and accum > 1:
+        cmd += ["--grad-accum-steps", str(accum)]
 
     if rebuild:
         cmd.append("--force")

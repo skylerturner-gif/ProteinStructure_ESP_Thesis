@@ -1,0 +1,60 @@
+# sweeps/batching_ablation.yaml
+#
+# 3 runs: 3 batching stability configurations, attention model only.
+#
+# All runs use the full feature set (query normals + curvature, multi-aggregation)
+# matching the "both" feature ablation configuration.
+#
+# Graph rebuild is forced on the first run to ensure query geometry features
+# are present.  Runs 2–3 share the same feature config so no rebuild is needed.
+#
+# Configurations tested:
+#   inv_size      — per-protein MSE averaging (removes large-protein dominance)
+#   grad_accum    — gradient accumulation over 4 steps (larger effective batch)
+#   both_batching — both batching features active
+#
+# Usage:
+#   python pipelines/run_sweep.py sweeps/batching_ablation.yaml --all --dry-run
+#   nohup python -u pipelines/run_sweep.py sweeps/batching_ablation.yaml --all \
+#       > nohup_batching_sweep.out 2>&1 &
+
+runs:
+  # ── Inverse size weighting only ───────────────────────────────────────────────
+  - suffix: inv_size_attention
+    rebuild_graphs: true
+    features:
+      query_curvature: true
+      query_normal: true
+    model:
+      multi_agg: true
+    training:
+      protein_weighted: true
+      grad_accum_steps: 1
+    train:
+      model: attention
+
+  # ── Gradient accumulation only (4 steps) ─────────────────────────────────────
+  - suffix: grad_accum_attention
+    features:
+      query_curvature: true
+      query_normal: true
+    model:
+      multi_agg: true
+    training:
+      protein_weighted: false
+      grad_accum_steps: 4
+    train:
+      model: attention
+
+  # ── Both batching features active ─────────────────────────────────────────────
+  - suffix: both_batching_attention
+    features:
+      query_curvature: true
+      query_normal: true
+    model:
+      multi_agg: true
+    training:
+      protein_weighted: true
+      grad_accum_steps: 4
+    train:
+      model: attention

@@ -109,6 +109,12 @@ def main() -> None:
     parser.add_argument("--weight-decay",   type=float, default=1e-4)
     parser.add_argument("--pearson-weight", type=float, default=0.1,
                         help="Weight for the Pearson correlation loss term.")
+    parser.add_argument("--protein-weighted", action="store_true", default=False,
+                        help="Weight MSE equally per protein (not per node) to reduce "
+                             "large-protein dominance in greedy batches.")
+    parser.add_argument("--grad-accum-steps", type=int, default=1,
+                        help="Accumulate gradients over N batches before stepping "
+                             "(1 = disabled, 4 = accumulate 4 batches).")
     parser.add_argument("--clip-grad",      type=float, default=1.0,
                         help="Gradient clipping max norm (0 to disable).")
     parser.add_argument("--lr-scheduler",   type=str,   default="cosine",
@@ -154,6 +160,7 @@ def main() -> None:
         "lr":                   _train_cfg.get("lr"),
         "weight_decay":         _train_cfg.get("weight_decay"),
         "pearson_weight":       _train_cfg.get("pearson_weight"),
+        "grad_accum_steps":     _train_cfg.get("grad_accum_steps"),
         "clip_grad":            _train_cfg.get("clip_grad"),
         "lr_patience":          _train_cfg.get("lr_patience"),
     }.items() if v is not None}
@@ -272,16 +279,20 @@ def main() -> None:
         Trainer.load_checkpoint(args.resume, raw_model, optimizer, scheduler)
 
     # ── Trainer ───────────────────────────────────────────────────────────────
-    loss_fn = ESPLoss(pearson_weight=args.pearson_weight)
+    loss_fn = ESPLoss(
+        pearson_weight   = args.pearson_weight,
+        protein_weighted = args.protein_weighted,
+    )
     trainer = Trainer(
-        model          = model,
-        optimizer      = optimizer,
-        scheduler      = scheduler,
-        loss_fn        = loss_fn,
-        device         = device,
-        checkpoint_dir = ckpt_dir,
-        clip_grad_norm = args.clip_grad,
-        rank           = rank,
+        model             = model,
+        optimizer         = optimizer,
+        scheduler         = scheduler,
+        loss_fn           = loss_fn,
+        device            = device,
+        checkpoint_dir    = ckpt_dir,
+        clip_grad_norm    = args.clip_grad,
+        grad_accum_steps  = args.grad_accum_steps,
+        rank              = rank,
         extra_state    = {
             "model_name":   args.model,
             "esp_mean":     esp_mean,
