@@ -72,7 +72,8 @@ class Trainer:
         loss_fn: ESPLoss,
         device: torch.device,
         checkpoint_dir: Path,
-        clip_grad_norm: float = 1.0,
+        clip_grad_norm:   float = 1.0,
+        grad_accum_steps: int   = 1,
         extra_state: dict[str, Any] | None = None,
         rank: int = 0,
     ) -> None:
@@ -82,9 +83,10 @@ class Trainer:
         self.loss_fn        = loss_fn
         self.device         = device
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.clip_grad_norm = clip_grad_norm
-        self.extra_state    = extra_state or {}
-        self.rank           = rank
+        self.clip_grad_norm   = clip_grad_norm
+        self.grad_accum_steps = max(1, grad_accum_steps)
+        self.extra_state      = extra_state or {}
+        self.rank             = rank
         self.is_main        = (rank == 0)
 
         self.best_val_loss  = float("inf")
@@ -103,25 +105,28 @@ class Trainer:
         total_loss = 0.0
         n_batches  = 0
 
-        for data in loader:
-            data = data.to(self.device)
-            self.optimizer.zero_grad()
-
+        self.optimizer.zero_grad()
+        for step_idx, data in enumerate(loader):
+            data   = data.to(self.device)
             pred   = self.model(data)
             target = data["query"].y
             batch  = data["query"].batch
 
-            loss = self.loss_fn(pred, target, batch)
+            # Scale loss so accumulated gradients match a single-step update.
+            loss = self.loss_fn(pred, target, batch) / self.grad_accum_steps
             loss.backward()
-
-            if self.clip_grad_norm > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.clip_grad_norm
-                )
-
-            self.optimizer.step()
-            total_loss += loss.item()
+            total_loss += loss.item() * self.grad_accum_steps   # track unscaled
             n_batches  += 1
+
+            at_boundary = (step_idx + 1) % self.grad_accum_steps == 0
+            is_last     = (step_idx + 1) == len(loader)
+            if at_boundary or is_last:
+                if self.clip_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.clip_grad_norm
+                    )
+                self.optimizer.step()
+                self.optimizer.zero_grad()
 
         return {"loss": total_loss / max(n_batches, 1)}
 

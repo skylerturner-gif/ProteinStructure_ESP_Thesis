@@ -133,6 +133,11 @@ def main() -> None:
     parser.add_argument("--resume", type=Path, default=None,
                         help="Path to a checkpoint to resume training from. "
                              "Ignored when --model both.")
+    parser.add_argument("--protein-weighted", action="store_true", default=False,
+                        help="Weight MSE equally per protein to reduce large-protein "
+                             "dominance in greedy batches.")
+    parser.add_argument("--grad-accum-steps", type=int, default=None,
+                        help="Gradient accumulation steps (1 = disabled).")
 
     args = parser.parse_args()
 
@@ -210,6 +215,11 @@ def main() -> None:
             )
             if args.resume and len(model_types) == 1:
                 train_args += ["--resume", str(args.resume)]
+            if args.protein_weighted or train_cfg.get("protein_weighted", False):
+                train_args.append("--protein-weighted")
+            accum = args.grad_accum_steps or train_cfg.get("grad_accum_steps", 1)
+            if accum and accum > 1:
+                train_args += ["--grad-accum-steps", str(accum)]
 
             ok = _run_script("pipelines/07_train.py", train_args, nproc=max(1, n_gpus))
             if not ok:
