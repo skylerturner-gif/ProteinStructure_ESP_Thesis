@@ -124,6 +124,9 @@ def main() -> None:
                         help="Minimum LR for cosine annealing (eta_min).")
     parser.add_argument("--lr-patience",   type=int,   default=15,
                         help="ReduceLROnPlateau patience in epochs (plateau scheduler only).")
+    parser.add_argument("--early-stopping-patience", type=int, default=0,
+                        help="Stop training if val loss does not improve for this many epochs "
+                             "(0 = disabled).")
 
     # ── I/O ───────────────────────────────────────────────────────────────────
     parser.add_argument(
@@ -160,9 +163,10 @@ def main() -> None:
         "lr":                   _train_cfg.get("lr"),
         "weight_decay":         _train_cfg.get("weight_decay"),
         "pearson_weight":       _train_cfg.get("pearson_weight"),
-        "grad_accum_steps":     _train_cfg.get("grad_accum_steps"),
-        "clip_grad":            _train_cfg.get("clip_grad"),
-        "lr_patience":          _train_cfg.get("lr_patience"),
+        "grad_accum_steps":          _train_cfg.get("grad_accum_steps"),
+        "clip_grad":                 _train_cfg.get("clip_grad"),
+        "lr_patience":               _train_cfg.get("lr_patience"),
+        "early_stopping_patience":   _train_cfg.get("early_stopping_patience"),
     }.items() if v is not None}
     parser.set_defaults(**_config_defaults)
 
@@ -290,9 +294,10 @@ def main() -> None:
         loss_fn           = loss_fn,
         device            = device,
         checkpoint_dir    = ckpt_dir,
-        clip_grad_norm    = args.clip_grad,
-        grad_accum_steps  = args.grad_accum_steps,
-        rank              = rank,
+        clip_grad_norm           = args.clip_grad,
+        grad_accum_steps         = args.grad_accum_steps,
+        early_stopping_patience  = args.early_stopping_patience,
+        rank                     = rank,
         extra_state    = {
             "model_name":   args.model,
             "esp_mean":     esp_mean,

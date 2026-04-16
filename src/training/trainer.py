@@ -72,8 +72,9 @@ class Trainer:
         loss_fn: ESPLoss,
         device: torch.device,
         checkpoint_dir: Path,
-        clip_grad_norm:   float = 1.0,
-        grad_accum_steps: int   = 1,
+        clip_grad_norm:        float = 1.0,
+        grad_accum_steps:      int   = 1,
+        early_stopping_patience: int = 0,
         extra_state: dict[str, Any] | None = None,
         rank: int = 0,
     ) -> None:
@@ -83,13 +84,15 @@ class Trainer:
         self.loss_fn        = loss_fn
         self.device         = device
         self.checkpoint_dir = Path(checkpoint_dir)
-        self.clip_grad_norm   = clip_grad_norm
-        self.grad_accum_steps = max(1, grad_accum_steps)
-        self.extra_state      = extra_state or {}
-        self.rank             = rank
-        self.is_main        = (rank == 0)
+        self.clip_grad_norm          = clip_grad_norm
+        self.grad_accum_steps        = max(1, grad_accum_steps)
+        self.early_stopping_patience = max(0, early_stopping_patience)
+        self.extra_state             = extra_state or {}
+        self.rank                    = rank
+        self.is_main                 = (rank == 0)
 
         self.best_val_loss  = float("inf")
+        self._epochs_no_improve = 0
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         self.history: dict[str, list] = {
@@ -220,6 +223,9 @@ class Trainer:
             is_best = val_m["loss"] < self.best_val_loss
             if is_best:
                 self.best_val_loss = val_m["loss"]
+                self._epochs_no_improve = 0
+            else:
+                self._epochs_no_improve += 1
 
             if self.is_main:
                 self._save_checkpoint("latest_model.pt", epoch, val_m)
@@ -246,6 +252,17 @@ class Trainer:
                     epoch, train_m["loss"], val_m["loss"],
                     val_m["rmse"], val_m["pearson_r"], current_lr, elapsed,
                 )
+
+            if (
+                self.early_stopping_patience > 0
+                and self._epochs_no_improve >= self.early_stopping_patience
+            ):
+                if self.is_main:
+                    print(
+                        f"\n[early stop] No improvement for "
+                        f"{self.early_stopping_patience} epochs — stopping at epoch {epoch}."
+                    )
+                break
 
         if self.is_main:
             print(f"\nDone. Best val loss: {self.best_val_loss:.4f}")
