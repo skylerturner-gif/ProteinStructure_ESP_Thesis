@@ -1,6 +1,6 @@
-# Protein Structure ESP Prediction Thesis
+# Protein ESP Surface Prediction via Geometric Deep Learning
 
-Research project investigating whether geometric deep learning (EGNN) can learn geometry-conditioned approximations of protein electrostatic potential (ESP) fields from AlphaFold-predicted structures.
+Thesis project investigating whether a heterogeneous graph neural network can learn to predict protein electrostatic potential (ESP) on the solvent-excluded surface from AlphaFold-predicted atomic structures. The model (AttentionESPN) operates on a heterogeneous graph of atom nodes and curvature-sampled surface query nodes, trained to approximate ESP values computed by PDB2PQR + APBS.
 
 ---
 
@@ -9,20 +9,34 @@ Research project investigating whether geometric deep learning (EGNN) can learn 
 ```
 ProteinStructure_ESP_Thesis/
 ├── src/
-│   ├── acquisition/        # AlphaFold API download
+│   ├── structure/          # AlphaFold API download
 │   ├── electrostatics/     # PDB2PQR and APBS wrappers
-│   ├── surface/            # SES mesh generation and ESP mapping
-│   ├── data/               # Dataset, graph building, transforms (stub)
-│   ├── models/             # EGNN architecture (stub)
-│   ├── analysis/           # Metrics and visualization
-│   └── utils/              # Logging, I/O, config, paths, filtering
-├── scripts/                # Numbered pipeline entry points
-├── pipelines/              # Full end-to-end orchestrator
-├── data/                   # Protein ID lists and placeholders
-├── outputs/                # Figures, metrics, logs
+│   ├── surface/            # SES mesh generation (MSMS) and ESP sampling
+│   ├── data/               # Dataset, graph builder, sampler, transforms
+│   ├── models/             # AttentionESPN, DistanceESPN, shared EGNN blocks
+│   ├── training/           # Trainer loop and loss functions
+│   ├── analysis/           # Metrics, embedding analysis, charge probe, visualization
+│   └── utils/              # Logging, I/O, config, paths, filtering, parallelism
+├── pipelines/              # Stage-by-stage and end-to-end pipeline scripts
+├── scripts/                # Analysis and visualization utilities
+├── sweeps/                 # WandB sweep config YAMLs (ablation studies)
+├── notebooks/
+│   ├── decisions/          # 10 decision notebooks (01–10)
+│   └── *.ipynb             # Exploratory / pipeline validation notebooks
+├── configs/                # Experiment config files
+├── data/
+│   ├── raw/                # Benchmark protein IDs (3 proteins, git-tracked)
+│   ├── interim/            # Placeholder
+│   ├── processed/          # Placeholder
+│   └── datasets/           # Dataset index
+├── docs/                   # Development workflow and GitHub setup guides
+├── outputs/                # Saved figures from decision notebooks
+├── logs/                   # Placeholder log directory
 ├── tests/                  # Placeholder (no tests yet)
+├── THESISPROCESSES.md      # All methodological decisions with rationale
 ├── config.template.yaml
-├── environment.yml
+├── environment.yml         # protein_esp: pipeline stages 1–5
+├── pyg_environment.yml     # pyg_env: graph construction and modeling
 └── pyproject.toml
 ```
 
@@ -30,9 +44,24 @@ ProteinStructure_ESP_Thesis/
 
 ## Setup
 
+> **Note for reviewers:** Due to large file sizes (protein data, ESP grids, mesh files, and model checkpoints), the data required to run the Jupyter notebooks is not included in this repository. The notebooks document methodological decisions and include all outputs as saved cell results, but cannot be re-executed without the external data files.
+
+This project uses **two separate conda environments** due to PyTorch Geometric dependency conflicts with the mesh-generation toolchain:
+
+| Environment | Use | File |
+|-------------|-----|------|
+| `protein_esp` | Pipeline stages 1–5: downloading structures, ESP computation, mesh generation, ESP sampling | `environment.yml` |
+| `pyg_env` | Modeling stages: graph construction, EGNN training, feature analysis notebooks | `pyg_environment.yml` |
+
 ```bash
+# Mesh generation and ESP pipeline
 conda env create -f environment.yml
 conda activate protein_esp
+pip install -e .
+
+# Modeling and graph neural network work
+conda env create -f pyg_environment.yml
+conda activate pyg_env
 pip install -e .
 
 # Copy and edit machine-specific config
@@ -123,6 +152,30 @@ python scripts/06_visualize.py AF-Q16613-F1 --clim -10 10
 | `--max-surface-area` | float | Maximum SES area (Å²) |
 
 `--all` and `--filter` are mutually exclusive and one is required.
+
+---
+
+## Decision Notebooks
+
+All methodological decisions are documented in `notebooks/decisions/`. Each notebook records what was tested, what alternatives were considered, and the rationale for the chosen approach. Results are captured as saved cell outputs.
+
+> **Notebooks 01–04** require `protein_esp` environment (mesh/ESP data).
+> **Notebooks 05–10** require `pyg_env` environment (graph construction, model training).
+
+| Notebook | Topic | Environment |
+|----------|-------|-------------|
+| `01_normal_offset_strategy` | ESP sampling offset from SES surface | `protein_esp` |
+| `02_ESP_sampling_method_strategy` | Interpolation vs. nearest-neighbour vs. Laplacian | `protein_esp` |
+| `03_vertex_sampling_strategy` | Curvature-weighted vs. Poisson-disk vertex subsampling | `protein_esp` |
+| `04_interpolation_strategy` | RBF reconstruction after sparse subsampling | `protein_esp` |
+| `05_graph_viability` | Heterogeneous graph construction: edge types, VRAM, timing | `pyg_env` |
+| `06_model_exploration` | Model architecture variants, dynamic batching, safe batch sizes | `pyg_env` |
+| `07_model_analysis` | Feature ablation: multi-aggregation, query geometry features | `pyg_env` |
+| `08_batching_analysis` | Loss weighting and gradient accumulation to reduce training thrash | `pyg_env` |
+| `09_query_layer_analysis` | QQ round ablation: long-range surface continuity | `pyg_env` |
+| `10_weight_charge_analysis` | Attention weight analysis and partial charge probe | `pyg_env` |
+
+See [THESISPROCESSES.md](THESISPROCESSES.md) for a summary of every decision made and the quantitative rationale.
 
 ---
 
