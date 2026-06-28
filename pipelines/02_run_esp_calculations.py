@@ -30,6 +30,16 @@ def main():
         help="Write the APBS .dx file permanently to <protein>/electrostatics/. "
              "By default the .dx is processed in memory and never saved to disk.",
     )
+    parser.add_argument(
+        "--pdb2pqr-only", action="store_true", default=False,
+        help="Run PDB2PQR only (generates .pqr and .in files) without running APBS. "
+             "Useful for pre-screening grid sizes before a long APBS batch.",
+    )
+    parser.add_argument(
+        "--ram-limit", type=float, default=40.0,
+        help="Skip APBS and clean up any generated files if the estimated grid memory "
+             "exceeds this many GB. Default: 40.",
+    )
     add_filter_args(parser)
     args = parser.parse_args()
 
@@ -60,13 +70,13 @@ def main():
                 protein_ok  = False
                 failed_step = "pdb2pqr"
 
-        if protein_ok:
+        if protein_ok and not args.pdb2pqr_only:
             # When keep_dx=True, skip if .dx already on disk.
             # When keep_dx=False, APBS result is in-memory only — no skip check.
             if args.keep_dx and p.dx_path.exists():
                 log.info("[%s] DX exists — skipping APBS", protein_id)
             else:
-                result = process_apbs(protein_id, data_root, keep_dx=args.keep_dx)
+                result = process_apbs(protein_id, data_root, keep_dx=args.keep_dx, ram_limit_gb=args.ram_limit)
                 if result is None:
                     protein_ok  = False
                     failed_step = "apbs"
