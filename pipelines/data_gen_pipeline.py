@@ -30,7 +30,7 @@ from pathlib import Path
 from src.analysis.esp_stats import evaluate_protein
 from src.electrostatics.run_apbs import process_apbs
 from src.electrostatics.run_pdb2pqr import process_pdb2pqr
-from src.structure.af_api import download_protein, find_downloaded_protein_ids, read_uniprot_ids
+from src.structure.af_api import read_uniprot_ids
 from src.surface.esp_mapping import sample_esp
 from src.surface.mesh import build_mesh
 from src.utils.config import get_config, get_data_root
@@ -150,23 +150,53 @@ def _run_protein(protein_id: str, data_root: Path, pipeline_log, keep_dx: bool =
     return step_results
 
 
-def _run_protein_worker(protein_id: str, data_root_str: str, keep_dx: bool) -> tuple[str, dict]:
+def _run_uniprot_worker(uniprot_id: str, data_root_str: str, keep_dx: bool) -> tuple[str, dict]:
     """
-    Process-pool-safe wrapper around _run_protein.
+    Process-pool-safe: download all fragments for one UniProt ID then run
+    the full per-protein pipeline on each fragment.
 
-    Takes only picklable primitive arguments and creates its own logger
-    so it can be submitted to ProcessPoolExecutor via run_parallel.
-
-    Returns (protein_id, step_results).
+    Takes only picklable primitive arguments and creates its own logger.
+    Returns (uniprot_id, {protein_id: step_results}).
     """
     from pathlib import Path
+    from src.structure.af_api import download_protein, find_downloaded_protein_ids
     from src.utils.config import get_config
-    from src.utils.helpers import get_pipeline_logger
+    from src.utils.helpers import get_pipeline_logger, notify
+    from src.utils.io import update_metadata
 
     data_root = Path(data_root_str)
     log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
-    steps     = _run_protein(protein_id, data_root, log, keep_dx=keep_dx)
-    return protein_id, steps
+    all_steps: dict[str, dict] = {}
+
+    protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
+    if protein_ids:
+        log.info("[%s] Already downloaded: %s — skipping download",
+                 uniprot_id, ", ".join(protein_ids))
+    else:
+        ok = download_protein(uniprot_id, data_root)
+        if not ok:
+            notify(uniprot_id, "failed", "download")
+            log.error("[%s] Download failed — skipping all steps", uniprot_id)
+            return uniprot_id, {}
+        protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
+        if not protein_ids:
+            log.error("[%s] Could not resolve any protein_id after download", uniprot_id)
+            notify(uniprot_id, "failed", "protein_id resolution")
+            return uniprot_id, {}
+        notify(uniprot_id, "complete", f"download ({len(protein_ids)} fragments)")
+
+    for protein_id in protein_ids:
+        step_results = _run_protein(protein_id, data_root, log, keep_dx=keep_dx)
+        try:
+            update_metadata(protein_id, data_root=data_root, data={
+                "pipeline_steps":    step_results,
+                "pipeline_complete": not any(v == "failed" for v in step_results.values()),
+            })
+        except Exception:
+            pass
+        all_steps[protein_id] = step_results
+
+    return uniprot_id, all_steps
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────
@@ -219,63 +249,28 @@ def main():
         log.warning("No UniProt IDs found in %s", args.id_file)
         return
 
-    log.info("Starting data gen pipeline for %d UniProt IDs", len(uniprot_ids))
-    all_results = {}
+    log.info("Starting data gen pipeline for %d UniProt IDs  workers=%d",
+             len(uniprot_ids), args.workers)
+    all_results: dict[str, dict] = {}
 
     with timer() as t_run:
-        for uniprot_id in uniprot_ids:
-
-            # ── Step 1: Download all fragments ────────────────────────────────
-            protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
-            if protein_ids:
-                log.info("[%s] Already downloaded: %s — skipping download",
-                         uniprot_id, ", ".join(protein_ids))
-            else:
-                ok = download_protein(uniprot_id, data_root)
-                if not ok:
-                    notify(uniprot_id, "failed", "download")
-                    log.error("[%s] Download failed — skipping all steps", uniprot_id)
+        if args.workers == 1:
+            for uniprot_id in uniprot_ids:
+                _, steps = _run_uniprot_worker(uniprot_id, str(data_root), args.keep_dx)
+                all_results.update(steps)
+        else:
+            parallel_results = run_parallel(
+                _run_uniprot_worker,
+                [(uid, str(data_root), args.keep_dx) for uid in uniprot_ids],
+                n_workers=args.workers,
+                label=f"proteins (workers={args.workers})",
+            )
+            for uniprot_id, outcome in parallel_results:
+                if isinstance(outcome, Exception):
+                    log.error("[%s] Worker exception: %s", uniprot_id, outcome)
                     continue
-                protein_ids = find_downloaded_protein_ids(uniprot_id, data_root)
-                if not protein_ids:
-                    log.error("[%s] Could not resolve any protein_id after download", uniprot_id)
-                    notify(uniprot_id, "failed", "protein_id resolution")
-                    continue
-                notify(uniprot_id, "complete", f"download ({len(protein_ids)} fragments)")
-
-            # ── Steps 2-6: Run pipeline for each fragment ─────────────────────
-            if args.workers == 1:
-                for protein_id in protein_ids:
-                    step_results = _run_protein(protein_id, data_root, log, keep_dx=args.keep_dx)
-                    all_results[protein_id] = step_results
-                    try:
-                        update_metadata(protein_id, data_root=data_root, data={
-                            "pipeline_steps"    : step_results,
-                            "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
-                        })
-                    except Exception:
-                        pass
-            else:
-                parallel_results = run_parallel(
-                    _run_protein_worker,
-                    [(pid, str(data_root), args.keep_dx) for pid in protein_ids],
-                    n_workers=args.workers,
-                    label=f"proteins (workers={args.workers})",
-                )
-                for protein_id, outcome in parallel_results:
-                    if isinstance(outcome, Exception):
-                        log.error("[%s] Worker exception: %s", protein_id, outcome)
-                        all_results[protein_id] = {}
-                        continue
-                    _, step_results = outcome
-                    all_results[protein_id] = step_results
-                    try:
-                        update_metadata(protein_id, data_root=data_root, data={
-                            "pipeline_steps"    : step_results,
-                            "pipeline_complete" : not any(v == "failed" for v in step_results.values()),
-                        })
-                    except Exception:
-                        pass
+                _, steps = outcome
+                all_results.update(steps)
 
     _log_summary(all_results, log)
     log.info("Total data gen pipeline time: %.1f s", t_run.seconds)
