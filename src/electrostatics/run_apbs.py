@@ -27,6 +27,7 @@ Usage (from a script):
 """
 
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -40,6 +41,30 @@ from src.utils.io import update_metadata
 from src.utils.paths import ProteinPaths
 
 log = get_logger(__name__)
+
+_BYTES_PER_POINT = 120  # ~15 working arrays × 8 bytes, conservative peak RSS estimate
+
+
+def _estimate_apbs_memory(apbs_in_text: str) -> int:
+    """Return estimated peak APBS memory in bytes from a .in file, or 0 if unparseable."""
+    m = re.search(r"\bdime\s+(\d+)\s+(\d+)\s+(\d+)", apbs_in_text)
+    if not m:
+        return 0
+    nx, ny, nz = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return nx * ny * nz * 120
+
+
+def _cleanup_protein(p: ProteinPaths, plog) -> None:
+    """Remove all generated files for a protein, leaving only the source CIF."""
+    dirs = [p.electrostatics_dir, p.mesh_dir, p.esp_dir, p.graph_dir]
+    for d in dirs:
+        if d.exists():
+            shutil.rmtree(d)
+            plog.info("Removed %s", d)
+    for path in [p.pqr_path, p.apbs_in_path]:
+        if path.exists():
+            path.unlink()
+            plog.info("Removed %s", path.name)
 
 
 # ── Core APBS runners ────────────────────────────────────────────────────────
@@ -84,6 +109,7 @@ def process_apbs(
     data_root: Path,
     *,
     keep_dx: bool = False,
+    ram_limit_gb: float = 40.0,
 ) -> tuple[tuple, np.ndarray] | None:
     """
     Run APBS for a protein and return the ESP grid as numpy arrays.
@@ -92,13 +118,15 @@ def process_apbs(
         <data_root>/<protein_id>/structure/<protein_id>.in
 
     Args:
-        protein_id: e.g. "AF-Q16613-F1"
-        data_root:  root of the external data directory
-        keep_dx:    if True, write the .dx file permanently to
-                    <data_root>/<protein_id>/electrostatics/<protein_id>.dx
-                    in addition to returning the grid.
-                    if False (default), the .dx is written to a
-                    TemporaryDirectory and deleted after reading.
+        protein_id:   e.g. "AF-Q16613-F1"
+        data_root:    root of the external data directory
+        keep_dx:      if True, write the .dx file permanently to
+                      <data_root>/<protein_id>/electrostatics/<protein_id>.dx
+                      in addition to returning the grid.
+                      if False (default), the .dx is written to a
+                      TemporaryDirectory and deleted after reading.
+        ram_limit_gb: skip and clean up if estimated APBS memory exceeds this
+                      many gigabytes. Default: 40.
 
     Returns:
         (axes, grid) on success — axes is a (x, y, z) tuple of 1-D coordinate
@@ -113,7 +141,19 @@ def process_apbs(
         plog.error("Run process_pdb2pqr first.")
         return None
 
-    plog.info("── Running APBS  keep_dx=%s ──", keep_dx)
+    in_text   = p.apbs_in_path.read_text()
+    est_bytes = _estimate_apbs_memory(in_text)
+    est_gb    = est_bytes / 1024 ** 3
+    limit_bytes = ram_limit_gb * 1024 ** 3
+    if est_bytes > limit_bytes:
+        plog.warning(
+            "[%s] Skipping APBS: estimated grid memory %.1f GB exceeds limit %.0f GB — cleaning up",
+            protein_id, est_gb, ram_limit_gb,
+        )
+        _cleanup_protein(p, plog)
+        return None
+
+    plog.info("── Running APBS  keep_dx=%s  est_mem=%.1f GB ──", keep_dx, est_gb)
 
     with timer() as t:
         if keep_dx:
