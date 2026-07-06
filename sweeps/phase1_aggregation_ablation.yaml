@@ -1,0 +1,120 @@
+# sweeps/phase1_aggregation_ablation.yaml
+#
+# Phase 1 of the staged ablation study: message-passing aggregation.
+#
+# 8 runs: {mean, sum, max, multi} aggregation x {distance, attention}.
+# Query node features (curvature, normal) and batching (protein weighting,
+# grad accumulation) are held at their defaults throughout — this phase
+# isolates the aggregation choice only. Winners here (by validation Pearson r,
+# not test) get carried forward as the fixed aggregation for Phase 2 (query
+# feature ablation).
+#
+# No graph rebuild is ever needed — features never change between runs, so
+# one graph build (against whatever dataset --all resolves to, e.g. the
+# 1000-protein ablation subsample) serves all 8 runs.
+#
+# Usage:
+#   python pipelines/run_sweep.py sweeps/phase1_aggregation_ablation.yaml --all --dry-run
+#   nohup python -u pipelines/run_sweep.py sweeps/phase1_aggregation_ablation.yaml --all \
+#       > nohup_phase1_sweep.out 2>&1 &
+
+runs:
+  # ── Distance model ────────────────────────────────────────────────────────
+  - suffix: distance_mean
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: mean
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: distance
+
+  - suffix: distance_sum
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: sum
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: distance
+
+  - suffix: distance_max
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: max
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: distance
+
+  - suffix: distance_multi
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: multi
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: distance
+
+  # ── Attention model ───────────────────────────────────────────────────────
+  # Note: agg here only affects the bond/radial/qq stages — AttentionESPN's
+  # AQ stage is always cross-attention regardless of this setting.
+  - suffix: attention_mean
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: mean
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: attention
+
+  - suffix: attention_sum
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: sum
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: attention
+
+  - suffix: attention_max
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: max
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: attention
+
+  - suffix: attention_multi
+    features:
+      query_curvature: false
+      query_normal:    false
+    model:
+      agg: multi
+    training:
+      protein_weighted: false
+      grad_accum_steps: 1
+    train:
+      model: attention

@@ -26,7 +26,7 @@ runs:
       query_curvature: true
       query_normal: true
     model:
-      multi_agg: true
+      agg: multi
     training:
       protein_weighted: true
       grad_accum_steps: 1
@@ -39,7 +39,7 @@ runs:
       query_curvature: true
       query_normal: true
     model:
-      multi_agg: true
+      agg: multi
     training:
       protein_weighted: false
       grad_accum_steps: 4
@@ -52,7 +52,7 @@ runs:
       query_curvature: true
       query_normal: true
     model:
-      multi_agg: true
+      agg: multi
     training:
       protein_weighted: true
       grad_accum_steps: 4

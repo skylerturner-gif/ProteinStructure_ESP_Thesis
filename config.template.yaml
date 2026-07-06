@@ -58,7 +58,14 @@ model:
   n_bond_radial_rounds: 2
   n_aq_rounds:          3
   n_qq_rounds:          2
-  multi_agg:            false       # mean+sum+max aggregation in MessageLayer (no graph rebuild needed)
+  agg:                  mean        # mean | sum | max | multi — MessageLayer aggregation (no graph rebuild needed)
+
+  # Feature ablation — all default true (full model). Set false to ablate.
+  # None of these require a graph rebuild; they only change what the model reads.
+  use_residue_embedding: true       # residue-type embedding in AtomEncoder
+  use_bond_edges:        true       # bond-edge message pass in Stage 1 + bond-count in
+                                    # AtomEncoder (gated together — see egnn.py docstring)
+  use_radial_edges:      true       # radial-edge message pass in Stage 1
 
 # Default training hyperparameters.
 # All values can be overridden via CLI flags in pipelines/model_pipeline.py.

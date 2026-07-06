@@ -37,7 +37,13 @@ __all__ = [
     "_QueryRefine",
     "N_ELEMENT_TYPES",
     "N_RESIDUE_TYPES",
+    "AGG_MODES",
 ]
+
+# Valid MessageLayer aggregation modes.
+#   mean, sum, max — single reduction
+#   multi          — concatenate mean + sum + max
+AGG_MODES = ("mean", "sum", "max", "multi")
 
 
 # ── MLP factory ───────────────────────────────────────────────────────────────
@@ -59,27 +65,44 @@ class AtomEncoder(nn.Module):
     Map discrete atom attributes to a continuous hidden vector.
 
     Inputs (from HeteroData['atom']):
-      atom_type    — int64 element index  (0..N_ELEMENT_TYPES-1)
-      residue_type — int64 residue index  (0..N_RESIDUE_TYPES-1)
-      bond_count   — int64 number of covalent bonds
+      atom_type    — int64 element index  (0..N_ELEMENT_TYPES-1)   — always used
+      residue_type — int64 residue index  (0..N_RESIDUE_TYPES-1)   — ablatable
+      bond_count   — int64 number of covalent bonds                — ablatable
 
-    Each input is independently embedded, concatenated, then projected to
-    hidden_dim via a two-layer MLP.
+    Each active input is independently embedded, concatenated, then projected
+    to hidden_dim via a two-layer MLP.
+
+    Args:
+        hidden_dim:            output dimensionality
+        use_residue_embedding: include the residue-type embedding (default True)
+        use_bond_count:        include the bond-count projection (default True)
     """
 
-    def __init__(self, hidden_dim: int) -> None:
+    def __init__(
+        self,
+        hidden_dim: int,
+        use_residue_embedding: bool = True,
+        use_bond_count:        bool = True,
+    ) -> None:
         super().__init__()
+        self.use_residue_embedding = use_residue_embedding
+        self.use_bond_count        = use_bond_count
+
         emb = hidden_dim // 3
+        n_active = 1 + int(use_residue_embedding) + int(use_bond_count)
+
         self.atom_emb  = nn.Embedding(N_ELEMENT_TYPES, emb)
-        self.res_emb   = nn.Embedding(N_RESIDUE_TYPES, emb)
-        self.bond_proj = nn.Linear(1, emb)
-        self.proj      = _mlp([emb * 3, hidden_dim, hidden_dim])
+        self.res_emb   = nn.Embedding(N_RESIDUE_TYPES, emb) if use_residue_embedding else None
+        self.bond_proj = nn.Linear(1, emb)                  if use_bond_count        else None
+        self.proj      = _mlp([emb * n_active, hidden_dim, hidden_dim])
 
     def forward(self, data: HeteroData) -> Tensor:
-        e = self.atom_emb(data["atom"].atom_type)
-        r = self.res_emb(data["atom"].residue_type)
-        b = self.bond_proj(data["atom"].bond_count.float().unsqueeze(-1))
-        return self.proj(torch.cat([e, r, b], dim=-1))
+        parts = [self.atom_emb(data["atom"].atom_type)]
+        if self.use_residue_embedding:
+            parts.append(self.res_emb(data["atom"].residue_type))
+        if self.use_bond_count:
+            parts.append(self.bond_proj(data["atom"].bond_count.float().unsqueeze(-1)))
+        return self.proj(torch.cat(parts, dim=-1))
 
 
 # ── Surface geometry encoder ──────────────────────────────────────────────────
@@ -121,22 +144,24 @@ class MessageLayer(nn.Module):
     Handles both same-type edges (bond, radial, qq) and bipartite edges (aq).
 
     Message  : MLP(cat(h_src, h_dst, edge_attr))  →  hidden_dim
-    Aggregate: configurable — mean only, or mean + sum + max (multi_agg=True)
+    Aggregate: configurable — "mean", "sum", "max", or "multi" (mean+sum+max
+               concatenated)
     Update   : h_dst = LayerNorm(h_dst + MLP(cat(h_dst, aggregations)))
 
     Args:
-        hidden_dim:   node feature dimensionality
+        hidden_dim:    node feature dimensionality
         edge_feat_dim: number of edge features
-        multi_agg:    if True, concatenate mean + sum + max aggregations
-                      (update MLP input = hidden_dim × 4 instead of × 2).
-                      If False (default), mean only — identical to the
-                      original single-aggregator behaviour.
+        agg:           one of AGG_MODES ("mean", "sum", "max", "multi").
+                      "multi" concatenates all three reductions (update MLP
+                      input = hidden_dim × 4 instead of × 2).
     """
 
-    def __init__(self, hidden_dim: int, edge_feat_dim: int, multi_agg: bool = False) -> None:
+    def __init__(self, hidden_dim: int, edge_feat_dim: int, agg: str = "mean") -> None:
         super().__init__()
-        self.multi_agg  = multi_agg
-        update_in       = hidden_dim * 4 if multi_agg else hidden_dim * 2
+        if agg not in AGG_MODES:
+            raise ValueError(f"agg={agg!r} must be one of {AGG_MODES}")
+        self.agg        = agg
+        update_in       = hidden_dim * 4 if agg == "multi" else hidden_dim * 2
         self.msg_mlp    = _mlp([hidden_dim * 2 + edge_feat_dim, hidden_dim, hidden_dim])
         self.update_mlp = _mlp([update_in, hidden_dim, hidden_dim])
         self.norm       = nn.LayerNorm(hidden_dim)
@@ -153,13 +178,13 @@ class MessageLayer(nn.Module):
         msgs = self.msg_mlp(
             torch.cat([h_src[src_idx], h_dst[dst_idx], edge_attr], dim=-1)
         )
-        if self.multi_agg:
+        if self.agg == "multi":
             agg_mean = scatter(msgs, dst_idx, dim=0, dim_size=n_dst, reduce="mean")
             agg_sum  = scatter(msgs, dst_idx, dim=0, dim_size=n_dst, reduce="sum")
             agg_max  = scatter(msgs, dst_idx, dim=0, dim_size=n_dst, reduce="max")
             combined = torch.cat([h_dst, agg_mean, agg_sum, agg_max], dim=-1)
         else:
-            agg      = scatter(msgs, dst_idx, dim=0, dim_size=n_dst, reduce="mean")
+            agg      = scatter(msgs, dst_idx, dim=0, dim_size=n_dst, reduce=self.agg)
             combined = torch.cat([h_dst, agg], dim=-1)
         delta = self.update_mlp(combined)
         return self.norm(h_dst + delta)
@@ -171,21 +196,34 @@ class _AtomMP(nn.Module):
     """
     Stage 1: interleaved bond → radial passes, repeated n_rounds times.
     Weights are shared across rounds (one layer instance per edge type).
+
+    Args:
+        use_bond_edges:   run the bond-edge message pass each round (default True)
+        use_radial_edges: run the radial-edge message pass each round (default True)
+                          If both are False, Stage 1 is the identity — h_atom
+                          passes through unchanged from AtomEncoder.
     """
 
-    def __init__(self, hidden_dim: int, n_rbf: int, n_rounds: int, multi_agg: bool = False) -> None:
+    def __init__(
+        self,
+        hidden_dim: int, n_rbf: int, n_rounds: int, agg: str = "mean",
+        use_bond_edges:   bool = True,
+        use_radial_edges: bool = True,
+    ) -> None:
         super().__init__()
         self.n_rounds     = n_rounds
-        self.bond_layer   = MessageLayer(hidden_dim, n_rbf + 1, multi_agg=multi_agg)
-        self.radial_layer = MessageLayer(hidden_dim, n_rbf,     multi_agg=multi_agg)
+        self.bond_layer   = MessageLayer(hidden_dim, n_rbf + 1, agg=agg) if use_bond_edges   else None
+        self.radial_layer = MessageLayer(hidden_dim, n_rbf,     agg=agg) if use_radial_edges else None
 
     def forward(self, h_atom: Tensor, data: HeteroData) -> Tensor:
-        bond   = data["atom", "bond",   "atom"]
-        radial = data["atom", "radial", "atom"]
-        n      = h_atom.shape[0]
+        n = h_atom.shape[0]
         for _ in range(self.n_rounds):
-            h_atom = self.bond_layer( h_atom, h_atom, bond.edge_index,   bond.edge_attr,   n)
-            h_atom = self.radial_layer(h_atom, h_atom, radial.edge_index, radial.edge_attr, n)
+            if self.bond_layer is not None:
+                bond   = data["atom", "bond",   "atom"]
+                h_atom = self.bond_layer(h_atom, h_atom, bond.edge_index, bond.edge_attr, n)
+            if self.radial_layer is not None:
+                radial = data["atom", "radial", "atom"]
+                h_atom = self.radial_layer(h_atom, h_atom, radial.edge_index, radial.edge_attr, n)
         return h_atom
 
 
@@ -195,10 +233,10 @@ class _QueryRefine(nn.Module):
     Weights are shared across rounds (one layer instance).
     """
 
-    def __init__(self, hidden_dim: int, n_rbf: int, n_rounds: int, multi_agg: bool = False) -> None:
+    def __init__(self, hidden_dim: int, n_rbf: int, n_rounds: int, agg: str = "mean") -> None:
         super().__init__()
         self.n_rounds = n_rounds
-        self.qq_layer = MessageLayer(hidden_dim, n_rbf, multi_agg=multi_agg)
+        self.qq_layer = MessageLayer(hidden_dim, n_rbf, agg=agg)
 
     def forward(self, h_query: Tensor, data: HeteroData) -> Tensor:
         qq = data["query", "qq", "query"]

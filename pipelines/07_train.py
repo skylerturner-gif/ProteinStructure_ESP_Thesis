@@ -41,14 +41,17 @@ from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger
 
 
-def build_model(args, device: torch.device, feat_cfg: dict, model_cfg: dict):
+def build_model(args, device: torch.device, feat_cfg: dict):
     common = dict(
         hidden_dim           = args.hidden_dim,
         n_rbf                = args.n_rbf,
         n_bond_radial_rounds = args.n_bond_radial_rounds,
         n_aq_rounds          = args.n_aq_rounds,
         n_qq_rounds          = args.n_qq_rounds,
-        multi_agg            = model_cfg.get("multi_agg",      False),
+        agg                  = args.agg,
+        use_residue_embedding = args.use_residue_embedding,
+        use_bond_edges        = args.use_bond_edges,
+        use_radial_edges      = args.use_radial_edges,
         has_curvature        = feat_cfg.get("query_curvature", False),
         has_normal           = feat_cfg.get("query_normal",    False),
     )
@@ -96,6 +99,26 @@ def main() -> None:
     parser.add_argument("--n-bond-radial-rounds", type=int,   default=2)
     parser.add_argument("--n-aq-rounds",       type=int,   default=3)
     parser.add_argument("--n-qq-rounds",       type=int,   default=2)
+    parser.add_argument("--agg", choices=["mean", "sum", "max", "multi"], default="mean",
+                        help="MessageLayer aggregation. 'multi' concatenates "
+                             "mean+sum+max. Attention model applies this to "
+                             "bond/radial/qq only — its AQ stage is always "
+                             "cross-attention.")
+
+    # ── Feature ablation ──────────────────────────────────────────────────────
+    parser.add_argument("--no-residue-embedding", dest="use_residue_embedding",
+                        action="store_false", default=True,
+                        help="Ablate the residue-type embedding in AtomEncoder.")
+    parser.add_argument("--no-bond-edges", dest="use_bond_edges",
+                        action="store_false", default=True,
+                        help="Ablate the bond-edge message pass in Stage 1, and the "
+                             "bond-count projection in AtomEncoder (gated together — "
+                             "otherwise bond chemistry leaks back in via h_src/h_dst "
+                             "on radial edges). Leaves atom type as the only "
+                             "chemistry signal.")
+    parser.add_argument("--no-radial-edges", dest="use_radial_edges",
+                        action="store_false", default=True,
+                        help="Ablate the radial-edge message pass in Stage 1.")
 
     # ── Graph construction ────────────────────────────────────────────────────
     parser.add_argument("--rebuild-graphs", action="store_true",
@@ -158,6 +181,10 @@ def main() -> None:
         "n_bond_radial_rounds": _model_cfg.get("n_bond_radial_rounds"),
         "n_aq_rounds":          _model_cfg.get("n_aq_rounds"),
         "n_qq_rounds":          _model_cfg.get("n_qq_rounds"),
+        "agg":                  _model_cfg.get("agg"),
+        "use_residue_embedding": _model_cfg.get("use_residue_embedding"),
+        "use_bond_edges":        _model_cfg.get("use_bond_edges"),
+        "use_radial_edges":      _model_cfg.get("use_radial_edges"),
         "epochs":               _train_cfg.get("epochs"),
         "max_edges_per_batch":  _train_cfg.get("max_edges_per_batch"),
         "lr":                   _train_cfg.get("lr"),
@@ -253,8 +280,7 @@ def main() -> None:
 
     # ── Model ─────────────────────────────────────────────────────────────────
     feat_cfg  = cfg.get("features", {})
-    model_cfg = cfg.get("model",    {})
-    model = build_model(args, device, feat_cfg, model_cfg)
+    model = build_model(args, device, feat_cfg)
     if ddp:
         from torch.nn.parallel import DistributedDataParallel
         model = DistributedDataParallel(model, device_ids=[local_rank])
@@ -309,7 +335,10 @@ def main() -> None:
                 "n_bond_radial_rounds": args.n_bond_radial_rounds,
                 "n_aq_rounds":          args.n_aq_rounds,
                 "n_qq_rounds":          args.n_qq_rounds,
-                "multi_agg":            model_cfg.get("multi_agg", False),
+                "agg":                  args.agg,
+                "use_residue_embedding": args.use_residue_embedding,
+                "use_bond_edges":        args.use_bond_edges,
+                "use_radial_edges":      args.use_radial_edges,
             },
             "feature_spec": feat_cfg,
         },
