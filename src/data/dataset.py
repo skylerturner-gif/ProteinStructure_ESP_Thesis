@@ -11,7 +11,7 @@ lazily — no graph construction happens at training time unless rebuild=True.
 Public API
 ----------
   ProteinGraphDataset(protein_ids, data_root, *, rebuild, transform)
-  split_dataset(dataset, train, val, seed, pinned_test) -> (train_ds, val_ds, test_ds)
+  split_dataset(dataset, train, val, seed) -> (train_ds, val_ds, test_ds)
 """
 
 from __future__ import annotations
@@ -31,22 +31,6 @@ from src.utils.paths import ProteinPaths
 
 
 SPLIT_MANIFEST_NAME = "split_manifest.json"
-
-
-# Proteins always assigned to the test set regardless of stratification.
-# These are the three reference proteins used throughout development.
-PINNED_TEST_IDS: tuple[str, ...] = (
-        "AF-P01082-F1",
-        "AF-P68469-F1",
-        "AF-Q2ES46-F1",
-        "AF-Q6P5X5-F1",
-        "AF-Q16613-F1",
-        "AF-P28237-F1",
-        "AF-B1KRT2-F1",
-        "AF-Q6P2D8-5-F1",
-        "AF-Q6P2D8-3-F1",
-        "AF-B1WC58-F1",
-)
 
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
@@ -200,14 +184,12 @@ def split_dataset(
     train: float = 0.8,
     val: float = 0.1,
     seed: int = 42,
-    pinned_test: tuple[str, ...] = PINNED_TEST_IDS,
 ) -> tuple[ProteinGraphDataset, ProteinGraphDataset, ProteinGraphDataset]:
     """
     Stratified 80/10/10 split of a ProteinGraphDataset.
 
     Stratification is over binned sequence_length × net_charge read from
-    per-protein metadata.  Proteins in pinned_test are always assigned to the
-    test split, regardless of stratification.
+    per-protein metadata.
 
     The test fraction is implicitly 1 - train - val.  Assign transforms after
     splitting:
@@ -222,33 +204,18 @@ def split_dataset(
         train:        training fraction (default 0.8)
         val:          validation fraction (default 0.1)
         seed:         RNG seed for reproducibility (default 42)
-        pinned_test:  protein IDs always placed in the test split
 
     Returns:
         (train_ds, val_ds, test_ds) — each a new ProteinGraphDataset
     """
     rng = np.random.default_rng(seed)
 
-    pinned   = set(pinned_test) & set(dataset.protein_ids)
-    pool_ids = [pid for pid in dataset.protein_ids if pid not in pinned]
-
-    seq_lens, net_charges = _load_strat_features(pool_ids, dataset.data_root)
+    seq_lens, net_charges = _load_strat_features(dataset.protein_ids, dataset.data_root)
 
     train_ids, val_ids, test_ids = _stratified_split(
-        pool_ids, seq_lens, net_charges,
+        dataset.protein_ids, seq_lens, net_charges,
         train_frac=train, val_frac=val, rng=rng,
     )
-
-    # Keep exactly len(pinned) proteins from the pool in test so that
-    # total test = len(pinned) pool proteins + len(pinned) pinned = 2*len(pinned).
-    # Any pool proteins beyond that quota are moved to val.
-    target_pool_test = len(pinned)
-    if len(test_ids) > target_pool_test:
-        val_ids.extend(test_ids[target_pool_test:])
-        test_ids = test_ids[:target_pool_test]
-
-    # Pinned proteins always go to test
-    test_ids.extend(sorted(pinned))
 
     shared = dict(
         data_root = dataset.data_root,
@@ -269,7 +236,6 @@ def write_split_manifest(
     train: float = 0.8,
     val: float = 0.1,
     seed: int = 42,
-    pinned_test: tuple[str, ...] = PINNED_TEST_IDS,
 ) -> Path:
     """
     Run the stratified split once and persist the result to
@@ -289,7 +255,6 @@ def write_split_manifest(
         train:       training fraction (default 0.8)
         val:         validation fraction (default 0.1)
         seed:        RNG seed (default 42)
-        pinned_test: protein IDs always placed in the test split
 
     Returns:
         Path to the written manifest file.
@@ -297,7 +262,7 @@ def write_split_manifest(
     manifest_path = Path(dataset.data_root) / SPLIT_MANIFEST_NAME
 
     train_ds, val_ds, test_ds = split_dataset(
-        dataset, train=train, val=val, seed=seed, pinned_test=pinned_test,
+        dataset, train=train, val=val, seed=seed,
     )
 
     manifest = {
@@ -305,7 +270,6 @@ def write_split_manifest(
         "seed":         seed,
         "train_frac":   train,
         "val_frac":     val,
-        "pinned_test":  list(pinned_test),
         "splits": {
             "train": train_ds.protein_ids,
             "val":   val_ds.protein_ids,
