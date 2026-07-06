@@ -28,7 +28,7 @@ runs:
       query_curvature: false
       query_normal:    false
     model:
-      multi_agg: false
+      agg: mean
     train:
       model: attention
 
@@ -37,7 +37,7 @@ runs:
       query_curvature: false
       query_normal:    false
     model:
-      multi_agg: false
+      agg: mean
     train:
       model: distance
 
@@ -47,7 +47,7 @@ runs:
       query_curvature: true
       query_normal:    true
     model:
-      multi_agg: false
+      agg: mean
     train:
       model: attention
 
@@ -56,7 +56,7 @@ runs:
       query_curvature: true
       query_normal:    true
     model:
-      multi_agg: false
+      agg: mean
     train:
       model: distance
 
@@ -66,7 +66,7 @@ runs:
       query_curvature: false
       query_normal:    false
     model:
-      multi_agg: true
+      agg: multi
     train:
       model: attention
 
@@ -75,7 +75,7 @@ runs:
       query_curvature: false
       query_normal:    false
     model:
-      multi_agg: true
+      agg: multi
     train:
       model: distance
 
@@ -85,7 +85,7 @@ runs:
       query_curvature: true
       query_normal:    true
     model:
-      multi_agg: true
+      agg: multi
     train:
       model: attention
 
@@ -94,6 +94,6 @@ runs:
       query_curvature: true
       query_normal:    true
     model:
-      multi_agg: true
+      agg: multi
     train:
       model: distance
