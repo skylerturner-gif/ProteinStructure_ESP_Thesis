@@ -18,10 +18,21 @@ plot_distributions
           per protein), same size/colour encoding, OLS line and R².
       [2] Sequence length vs full-mesh RMSE, colour = net charge.
 
+plot_error_by_esp
+    Two-panel figure per model run (SUMMER_PLAN.md "Error Distribution by
+    ESP Value"):
+      [0] Residual (pred − true) vs ground-truth ESP value, all query
+          vertices, colour = net charge. A binned median |residual| trend
+          line shows whether error grows at ESP extremes.
+      [1] Residual histograms split by |ESP| tertile (low/mid/high
+          magnitude) — a widening distribution at high magnitude means the
+          model struggles more with extreme ESP values.
+
 Usage:
-    from src.analysis.model_plots import plot_training_curves, plot_distributions
+    from src.analysis.model_plots import plot_training_curves, plot_distributions, plot_error_by_esp
     plot_training_curves(ckpt_dir, save_dir=Path("~/figures"), model_name="attention")
     plot_distributions(ckpt_dir, data_root, save_dir=Path("~/figures"))
+    plot_error_by_esp(ckpt_dir, data_root, save_dir=Path("~/figures"))
 """
 
 from __future__ import annotations
@@ -433,6 +444,166 @@ def plot_distributions(
         out = save_dir / fname
         fig.savefig(out, dpi=150, bbox_inches="tight")
         print(f"  [distributions] Saved → {out}")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+# ── Error distribution by ESP value ─────────────────────────────────────────────
+
+def _net_charge_lookup(pids: list[str], data_root: Path) -> dict[str, float]:
+    """Load net_charge for each protein_id, defaulting to 0.0 if missing."""
+    from src.utils.io import load_metadata
+
+    out: dict[str, float] = {}
+    for pid in pids:
+        try:
+            out[pid] = float(load_metadata(pid, data_root).get("net_charge", 0.0))
+        except FileNotFoundError:
+            out[pid] = 0.0
+    return out
+
+
+def plot_error_by_esp(
+    ckpt_dir: Path,
+    data_root: Path,
+    save_dir: Path | None = None,
+    model_name: str = "",
+    max_pts_per_protein: int = 2000,
+    n_bins: int = 20,
+) -> None:
+    """
+    Two-panel error-by-ESP-value diagnostic (SUMMER_PLAN.md "Error
+    Distribution by ESP Value"): does the model struggle more at extreme
+    positive/negative ESP values, and does that vary with a protein's net
+    charge?
+
+      Left  — Residual (pred − true ESP) vs ground-truth ESP, all query
+              vertices (subsampled per protein for readability), colour =
+              net charge. A black line shows the median |residual| within
+              each ESP bin, making any error-vs-magnitude trend visible
+              against the point cloud.
+      Right — Residual histograms split by |ESP| tertile (low/mid/high
+              magnitude, thresholds computed globally across all loaded
+              vertices). A widening or off-centre distribution in the
+              "high" tertile means the model is systematically worse at
+              extreme ESP values, not just noisier.
+
+    Args:
+        ckpt_dir:             checkpoint directory (contains test_predictions/)
+        data_root:            protein data root
+        save_dir:             save figure here instead of showing interactively
+        model_name:           prefix for saved filename
+        max_pts_per_protein:  subsample cap per protein for the scatter panel
+        n_bins:                number of ESP bins for the median-error trend line
+    """
+    pred_dir = ckpt_dir / "test_predictions"
+    if not pred_dir.exists():
+        print(f"  [error_by_esp] test_predictions/ not found at {pred_dir}")
+        return
+
+    pids = sorted(p.name.replace("_pred.npz", "") for p in pred_dir.glob("*_pred.npz"))
+    if not pids:
+        print(f"  [error_by_esp] No *_pred.npz files in {pred_dir}")
+        return
+
+    rng     = np.random.default_rng(0)
+    charges = _net_charge_lookup(pids, data_root)
+    sparse  = _load_sparse_preds(pids, pred_dir, rng, max_pts=None)
+
+    all_true: list[np.ndarray] = []
+    all_resid: list[np.ndarray] = []
+    all_charge: list[np.ndarray] = []
+    for pid, (true_esp, pred_esp) in sparse.items():
+        n = len(true_esp)
+        if n > max_pts_per_protein:
+            idx = rng.choice(n, max_pts_per_protein, replace=False)
+            true_esp = true_esp[idx]
+            pred_esp = pred_esp[idx]
+        all_true.append(true_esp)
+        all_resid.append(pred_esp - true_esp)
+        all_charge.append(np.full(len(true_esp), charges[pid]))
+
+    if not all_true:
+        print("  [error_by_esp] No predictions loaded.")
+        return
+
+    true_v  = np.concatenate(all_true)
+    resid_v = np.concatenate(all_resid)
+    charge_v = np.concatenate(all_charge)
+
+    abs_max = max(abs(charge_v.min()), abs(charge_v.max()), 1.0)
+    norm    = mcolors.TwoSlopeNorm(vcenter=0.0, vmin=-abs_max, vmax=abs_max)
+    cmap    = plt.cm.coolwarm
+
+    fig, (ax_scatter, ax_hist) = plt.subplots(1, 2, figsize=(15, 6))
+    prefix = f"{model_name}_" if model_name else ""
+    fig.suptitle(
+        f"Error distribution by ESP value — {ckpt_dir.name}  ({len(pids)} test proteins)",
+        fontsize=12,
+    )
+
+    # ── Left: residual vs ESP, coloured by net charge ────────────────────────
+    sc = ax_scatter.scatter(
+        true_v, resid_v, c=charge_v, cmap=cmap, norm=norm,
+        s=8, alpha=0.25, linewidths=0, rasterized=True,
+    )
+    ax_scatter.axhline(0.0, color="k", lw=1, alpha=0.5)
+
+    # Median |residual| trend, plotted on the same axis/units as the residual
+    # scatter (both kT/e) — avoids a second y-axis and the label collisions
+    # that come with it.
+    edges = np.linspace(true_v.min(), true_v.max(), n_bins + 1)
+    bin_idx = np.clip(np.digitize(true_v, edges) - 1, 0, n_bins - 1)
+    bin_centers, bin_medians = [], []
+    for b in range(n_bins):
+        mask = bin_idx == b
+        if mask.sum() < 5:
+            continue
+        bin_centers.append(0.5 * (edges[b] + edges[b + 1]))
+        bin_medians.append(np.median(np.abs(resid_v[mask])))
+    if bin_centers:
+        ax_scatter.plot(bin_centers, bin_medians, color="black", lw=2, marker="o",
+                        markersize=4, label="median |residual| (binned)", zorder=5)
+        ax_scatter.legend(fontsize=8, loc="upper center")
+
+    ax_scatter.set_xlabel("Ground truth ESP (kT/e)")
+    ax_scatter.set_ylabel("Residual  (pred − true, kT/e)")
+    ax_scatter.set_title("Residual vs ESP value")
+    cb = plt.colorbar(sc, ax=ax_scatter, shrink=0.8, pad=0.12)
+    cb.set_label("Net charge (e)")
+
+    # ── Right: residual histograms by |ESP| tertile ──────────────────────────
+    abs_true = np.abs(true_v)
+    t1, t2 = np.percentile(abs_true, [100 / 3, 200 / 3])
+    tiers = [
+        ("low |ESP|",  abs_true <  t1,               "#4e79a7"),
+        ("mid |ESP|",  (abs_true >= t1) & (abs_true < t2), "#f28e2b"),
+        ("high |ESP|", abs_true >= t2,               "#e15759"),
+    ]
+    lo, hi = np.percentile(resid_v, [0.5, 99.5])
+    bins = np.linspace(lo, hi, 60)
+    for label, mask, color in tiers:
+        if mask.sum() == 0:
+            continue
+        r = resid_v[mask]
+        ax_hist.hist(
+            r, bins=bins, color=color, alpha=0.5, density=True,
+            label=f"{label}  (n={mask.sum():,}, median|r|={np.median(np.abs(r)):.3f})",
+        )
+    ax_hist.axvline(0.0, color="k", lw=1, alpha=0.5)
+    ax_hist.set_xlabel("Residual  (pred − true, kT/e)")
+    ax_hist.set_ylabel("Density")
+    ax_hist.set_title("Residual distribution by |ESP| tertile")
+    ax_hist.legend(fontsize=8)
+
+    plt.tight_layout()
+
+    if save_dir is not None:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        out = save_dir / f"{prefix}error_by_esp.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        print(f"  [error_by_esp] Saved → {out}")
         plt.close(fig)
     else:
         plt.show()

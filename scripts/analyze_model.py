@@ -9,6 +9,10 @@ Modes (combine freely):
                       parity plots (with OLS line and R²), plus sequence
                       length vs full-mesh RMSE.  Colour = net charge,
                       size = sequence length.
+    --error-by-esp    Two-panel figure: residual vs ESP value (colour = net
+                      charge, with a binned median |residual| trend line),
+                      plus residual histograms split by |ESP| tertile —
+                      does the model struggle more at extreme ESP values?
     --visualize       PyVista three-panel view for test proteins: predicted ESP,
                       APBS ground truth, and absolute error on the full mesh.
 
@@ -18,7 +22,7 @@ directly for use in notebooks or other scripts.
 Usage:
     # All analyses, all test proteins
     python scripts/analyze_model.py --model attention \\
-        --curves --distributions --visualize
+        --curves --distributions --error-by-esp --visualize
 
     # Training curves only, save figures
     python scripts/analyze_model.py --model attention \\
@@ -40,7 +44,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.analysis.model_plots import plot_distributions, plot_training_curves
+from src.analysis.model_plots import plot_distributions, plot_error_by_esp, plot_training_curves
 from src.analysis.model_visualization import visualize_protein
 from src.utils.config import get_data_root
 
@@ -76,6 +80,9 @@ def main() -> None:
                         help="Plot training curves from metrics.csv.")
     parser.add_argument("--distributions", action="store_true",
                         help="Plot error distributions from test_metrics.json.")
+    parser.add_argument("--error-by-esp",  action="store_true",
+                        help="Plot residual vs ESP value and residual histograms "
+                             "by |ESP| tertile.")
     parser.add_argument("--visualize",     action="store_true",
                         help="PyVista visualisation of test proteins.")
 
@@ -98,8 +105,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if not (args.curves or args.distributions or args.visualize):
-        parser.error("Specify at least one of --curves, --distributions, --visualize.")
+    if not (args.curves or args.distributions or args.error_by_esp or args.visualize):
+        parser.error(
+            "Specify at least one of --curves, --distributions, --error-by-esp, --visualize."
+        )
 
     # ── Resolve paths ─────────────────────────────────────────────────────────
     data_root = args.data_root or get_data_root()
@@ -128,6 +137,15 @@ def main() -> None:
             ckpt_dir, data_root,
             reconstruction=args.reconstruction,
             force_recompute=args.force_recompute,
+            save_dir=args.save_plots,
+            model_name=args.model or "",
+        )
+
+    # ── Error distribution by ESP value ───────────────────────────────────────
+    if args.error_by_esp:
+        print("Plotting error distribution by ESP value...")
+        plot_error_by_esp(
+            ckpt_dir, data_root,
             save_dir=args.save_plots,
             model_name=args.model or "",
         )
