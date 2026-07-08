@@ -129,7 +129,7 @@ This document records every methodological decision made in the pipeline — wha
 ## Training — Loss Weighting & Gradient Accumulation
 
 **Decision:** Inverse protein size weighting (`inv_size`) and gradient accumulation (2 steps) applied together (`both_batching` configuration).
-**Notebook:** `notebooks/decisions/08_batching_analysis.ipynb`
+**Notebook:** `notebooks/decisions/10_batching_analysis.ipynb`
 
 **Problem addressed:** With dynamic batching over highly variable protein sizes, two issues compound: (1) large proteins dominate the loss gradient proportional to their surface area; (2) small per-protein batches produce high-variance gradient estimates causing train/val loss thrashing.
 
@@ -190,7 +190,7 @@ This document records every methodological decision made in the pipeline — wha
 
 **Decision:** AttentionESPN with both optional features enabled: query geometry (`norm_curv`) and multi-aggregation (`multi`), referred to as the `both` configuration.
 
-**Notebook:** `notebooks/decisions/07_model_analysis.ipynb`
+**Notebook:** _original feature-ablation notebook (retired — superseded by the staged ablation plan; the current notebook 07 covers a different axis, message-passing aggregation)_
 
 **Evaluated on:** 20 proteins, 8 ablation runs (2 model types × 4 feature configs).
 
@@ -206,13 +206,13 @@ This document records every methodological decision made in the pipeline — wha
 
 **Decision:** QQ rounds kept (qq=2). Geometry features (surface normals + curvature) **dropped**.
 
-**Notebook:** `notebooks/decisions/09_query_layer_analysis.ipynb`
+**Notebook:** `notebooks/decisions/11_query_layer_analysis.ipynb`
 
 **Final forward configuration:** AttentionESPN + multi-aggregation + inverse size weighting + gradient accumulation + qq=2, no geometry features.
 
 **QQ rounds are essential:** Removing QQ rounds drops Pearson r from 0.783 → 0.667 (−0.116) — the largest single-component degradation across all ablations. The kNN=8 distance cutoff means each QQ pass reaches only immediate surface neighbours (~few Å). Without multi-hop iteration, the model cannot capture long-range surface continuity: inter-residue charge patterns, surface-scale charge asymmetry, and smooth ESP gradients all require information to diffuse across multiple hops. Two QQ rounds act as a limited surface diffusion process that makes these patterns learnable.
 
-**Geometry features dropped:** The QQ ablation isolates the geometry feature effect without lateral propagation — removing normals + curvature when qq=0 *improves* r from 0.667 to 0.748 (+0.081). Without a surface propagation pathway, explicit geometry injection is disruptive rather than informative. Combined with the marginal and inconsistent gains seen in notebook 07 (geometry features underperformed multi-only by −0.021 r), the pattern is clear: the attention model's RBF-biased cross-attention already encodes geometric context implicitly, and adding explicit surface geometry features introduces competing gradient signals regardless of QQ depth.
+**Geometry features dropped:** The QQ ablation isolates the geometry feature effect without lateral propagation — removing normals + curvature when qq=0 *improves* r from 0.667 to 0.748 (+0.081). Without a surface propagation pathway, explicit geometry injection is disruptive rather than informative. Combined with the marginal and inconsistent gains seen in the original feature-ablation notebook (geometry features underperformed multi-only by −0.021 r), the pattern is clear: the attention model's RBF-biased cross-attention already encodes geometric context implicitly, and adding explicit surface geometry features introduces competing gradient signals regardless of QQ depth.
 
 ---
 
@@ -220,7 +220,7 @@ This document records every methodological decision made in the pipeline — wha
 
 **Finding:** Atom embeddings after Stage 1 message passing encode per-atom partial charges with mean R² = 0.9947 (RMSE = 0.020 e) from a frozen-backbone 3-layer MLP probe.
 
-**Notebook:** `notebooks/decisions/10_weight_charge_analysis.ipynb`
+**Notebook:** `notebooks/decisions/15_partial_charge_probe.ipynb`
 
 **Significance:** Partial charges are the direct physical source of ESP — the APBS solver computes ESP by treating each atom as a point charge at its PARSE-assigned partial charge. A frozen probe recovering these charges at ~99.5% explained variance confirms the model is not operating as a geometric interpolator; instead, atom representations after the bond and radial message passing rounds encode the charge distribution required for ESP prediction. The probe converged rapidly (30 epochs, MSE 0.0077 → 0.0004), indicating this information is linearly accessible from the embeddings.
 

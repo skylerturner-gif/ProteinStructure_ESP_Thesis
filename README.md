@@ -160,7 +160,7 @@ python scripts/06_visualize.py AF-Q16613-F1 --clim -10 10
 All methodological decisions are documented in `notebooks/decisions/`. Each notebook records what was tested, what alternatives were considered, and the rationale for the chosen approach. Results are captured as saved cell outputs.
 
 > **Notebooks 01–04** require `protein_esp` environment (mesh/ESP data).
-> **Notebooks 05–10** require `pyg_env` environment (graph construction, model training).
+> **Notebooks 05–16** require `pyg_env` environment (graph construction, model training).
 
 | Notebook | Topic | Environment |
 |----------|-------|-------------|
@@ -170,10 +170,16 @@ All methodological decisions are documented in `notebooks/decisions/`. Each note
 | `04_interpolation_strategy` | RBF reconstruction after sparse subsampling | `protein_esp` |
 | `05_graph_viability` | Heterogeneous graph construction: edge types, VRAM, timing | `pyg_env` |
 | `06_model_exploration` | Model architecture variants, dynamic batching, safe batch sizes | `pyg_env` |
-| `07_model_analysis` | Feature ablation: multi-aggregation, query geometry features | `pyg_env` |
-| `08_batching_analysis` | Loss weighting and gradient accumulation to reduce training thrash | `pyg_env` |
-| `09_query_layer_analysis` | QQ round ablation: long-range surface continuity | `pyg_env` |
-| `10_weight_charge_analysis` | Attention weight analysis and partial charge probe | `pyg_env` |
+| `07_message_passing_analysis` | Staged ablation Phase 1: message-passing aggregation (mean/sum/max/multi) | `pyg_env` |
+| `08_query_node_features` | Staged ablation Phase 2: query geometry features (curvature, normal) | `pyg_env` |
+| `09_equivariance_reliance` | Evaluation only: SO(3) rotation/translation robustness of Phase 1+2 winners | `pyg_env` |
+| `10_batching_analysis` | Staged ablation Phase 3/4: loss weighting and gradient accumulation | `pyg_env` |
+| `11_query_layer_analysis` | QQ round ablation: long-range surface continuity | `pyg_env` |
+| `12_chemistry_layer_analysis` | Chemistry ablation: residue embedding, bond edges/count, radial edges | `pyg_env` |
+| `13_message_rounds_optimization` | Planned: message-passing round-count sweep (not yet designed) | `pyg_env` |
+| `14_embedding_analysis` | Atom-type embedding and attention-weight analysis | `pyg_env` |
+| `15_partial_charge_probe` | Frozen-backbone probe for per-atom partial charges | `pyg_env` |
+| `16_coulomb_baseline` | Vacuum Coulomb physics floor vs. RBF ceiling | `pyg_env` |
 
 See [THESISPROCESSES.md](THESISPROCESSES.md) for a summary of every decision made and the quantitative rationale.
 
