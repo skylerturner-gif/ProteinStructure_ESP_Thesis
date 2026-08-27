@@ -30,6 +30,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from src.utils.config import get_config
 from src.utils.helpers import get_logger, timer
@@ -87,6 +88,127 @@ def xyzr_from_pqr(pqr_file: Path, plog) -> tuple[list[str], np.ndarray]:
 
     plog.info("Parsed %d atoms from PQR file", len(xyzr_lines))
     return xyzr_lines, np.array(positions, dtype=np.float32)
+
+
+# ── Geometry validity and singularity correction ──────────────────────────────
+
+# Penetration depth above which a vertex is treated as a genuine MSMS
+# singularity rather than expected floating-point noise from re-entrant patches.
+# MSMS's own docs (Sanner, Olson & Spehner, Biopolymers 1996) confirm that
+# singularity vertex normals point arbitrarily to a probe centre, so the mesh
+# normal is untrustworthy at these locations.  Vertices with sub-threshold
+# penetration (~10 % of all vertices, ordinary re-entrant patches) are left
+# untouched; the correction is a true no-op for them.
+GEOM_THRESHOLD = 0.3  # Å
+
+
+def atom_coords_radii_from_pqr(pqr_file: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Return (atom_xyz (N,3), atom_radii (N,)) from a PDB2PQR .pqr file.
+
+    Zero-radius atoms (PARSE hydrogens) are excluded to match xyzr_from_pqr —
+    the function that feeds MSMS. Including them lets the KDTree return a H as
+    nearest neighbour; penetration = 0 - dist is then always negative, masking
+    real heavy-atom defects.
+    """
+    coords, radii = [], []
+    with open(pqr_file) as f:
+        for line in f:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            try:
+                radius = float(parts[9])
+                if radius <= 0:
+                    continue
+                coords.append((float(parts[5]), float(parts[6]), float(parts[7])))
+                radii.append(radius)
+            except ValueError:
+                continue
+    return np.array(coords, dtype=np.float32), np.array(radii, dtype=np.float32)
+
+
+def geom_validity(
+    verts: np.ndarray,
+    atom_xyz: np.ndarray,
+    atom_radii: np.ndarray,
+    threshold: float = GEOM_THRESHOLD,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute per-vertex penetration depth into the nearest atom's VdW sphere.
+
+    Returns:
+        penetration  (N,) float32 — positive where vertex is inside an atom
+        needs_fix    (N,) bool    — True where penetration > threshold
+    """
+    tree = cKDTree(atom_xyz)
+    dist, nearest = tree.query(verts, k=1)
+    penetration = (atom_radii[nearest] - dist).astype(np.float32)
+    return penetration, penetration > threshold
+
+
+def _compute_vertex_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Area-weighted vertex normals recomputed from face geometry."""
+    normals = np.zeros_like(verts, dtype=np.float64)
+    v0 = verts[faces[:, 0]].astype(np.float64)
+    v1 = verts[faces[:, 1]].astype(np.float64)
+    v2 = verts[faces[:, 2]].astype(np.float64)
+    face_normals = np.cross(v1 - v0, v2 - v0)  # magnitude = 2 × face area
+    np.add.at(normals, faces[:, 0], face_normals)
+    np.add.at(normals, faces[:, 1], face_normals)
+    np.add.at(normals, faces[:, 2], face_normals)
+    norms = np.linalg.norm(normals, axis=1, keepdims=True)
+    norms = np.where(norms < 1e-8, 1.0, norms)
+    return (normals / norms).astype(np.float32)
+
+
+def resolve_singularities(
+    verts: np.ndarray,
+    atom_xyz: np.ndarray,
+    atom_radii: np.ndarray,
+    margin: float = 0.15,
+    max_passes: int = 15,
+    max_displacement: float = 4.0,
+) -> tuple[np.ndarray, int]:
+    """
+    Push each vertex outside all atom VdW spheres by displacing along the
+    atom-centre → vertex vector (not the unreliable mesh normal).
+
+    Iterates up to max_passes times because escaping one atom can move a
+    vertex into a tightly-packed neighbour.  Total displacement is capped at
+    max_displacement Å as a safety valve against pathological geometry.
+
+    Returns:
+        fixed_verts   (N, 3) float32 — corrected vertex positions
+        n_corrected   int             — number of vertices actually moved
+    """
+    tree = cKDTree(atom_xyz)
+    fixed  = verts.copy().astype(np.float32)
+    origin = verts.copy().astype(np.float32)
+    moved  = np.zeros(len(fixed), dtype=bool)
+
+    for _ in range(max_passes):
+        dist, nearest = tree.query(fixed, k=1)
+        violated = dist < atom_radii[nearest]
+        if not violated.any():
+            break
+        for i in np.where(violated)[0]:
+            ai        = int(nearest[i])
+            direction = fixed[i] - atom_xyz[ai]
+            d         = float(np.linalg.norm(direction))
+            if d < 1e-8:
+                direction = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+                d = 1.0
+            target = atom_xyz[ai] + (atom_radii[ai] + margin) * (direction / d)
+            # Clamp total displacement from original position
+            disp = np.linalg.norm(target - origin[i])
+            if disp > max_displacement:
+                target = origin[i] + max_displacement * (target - origin[i]) / disp
+            fixed[i] = target
+            moved[i] = True
+
+    return fixed, int(moved.sum())
 
 
 # ── MSMS runner ───────────────────────────────────────────────────────────────
@@ -237,6 +359,19 @@ def build_mesh(pqr_file: Path, protein_id: str, data_root: Path) -> Path:
     with timer() as t:
         verts, normals, faces, ses_area = run_msms(xyzr_lines, positions, plog)
     plog.info("MSMS total: %.2f s", t.seconds)
+
+    atom_xyz, atom_radii = atom_coords_radii_from_pqr(pqr_file)
+    pen, needs_fix = geom_validity(verts, atom_xyz, atom_radii, GEOM_THRESHOLD)
+    if needs_fix.any():
+        fixed_subset, n_corrected = resolve_singularities(
+            verts[needs_fix], atom_xyz, atom_radii
+        )
+        verts[needs_fix] = fixed_subset
+        normals = _compute_vertex_normals(verts, faces)
+        plog.info(
+            "Singularity correction: %d vertices moved (max pen=%.3f Å)",
+            n_corrected, float(pen[needs_fix].max()),
+        )
 
     save_npz_mesh(p.mesh_path, verts, normals, faces, ses_area, plog)
     export_vtk(p.vtk_path, verts, faces, plog)

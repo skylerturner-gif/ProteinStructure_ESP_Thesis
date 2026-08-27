@@ -141,6 +141,7 @@ class AttentionESPN(nn.Module):
         n_aq_rounds:          int = 3,
         n_qq_rounds:          int = 2,
         agg:                  str = "mean",
+        use_element_embedding: bool = True,
         use_residue_embedding: bool = True,
         use_bond_edges:        bool = True,
         use_radial_edges:      bool = True,
@@ -155,6 +156,7 @@ class AttentionESPN(nn.Module):
 
         self.atom_encoder  = AtomEncoder(
             hidden_dim,
+            use_element_embedding=use_element_embedding,
             use_residue_embedding=use_residue_embedding,
             use_bond_count=use_bond_edges,
         )

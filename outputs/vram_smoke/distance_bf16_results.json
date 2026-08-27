@@ -1,0 +1,61 @@
+{
+  "name": "distance_bf16",
+  "bf16": true,
+  "epochs": [
+    {
+      "epoch": 1,
+      "allocated_gb": 11.52,
+      "reserved_gb": 19.63,
+      "wall_s": 34,
+      "nvsmi_peak_mib": {
+        "0": 20907,
+        "1": 19319
+      },
+      "nvsmi_max_mib": 20907
+    },
+    {
+      "epoch": 2,
+      "allocated_gb": 11.52,
+      "reserved_gb": 19.63,
+      "wall_s": 34,
+      "nvsmi_peak_mib": {
+        "0": 20907,
+        "1": 19319
+      },
+      "nvsmi_max_mib": 20907
+    },
+    {
+      "epoch": 3,
+      "allocated_gb": 11.52,
+      "reserved_gb": 19.63,
+      "wall_s": 34,
+      "nvsmi_peak_mib": {
+        "0": 20907,
+        "1": 19319
+      },
+      "nvsmi_max_mib": 20907
+    },
+    {
+      "epoch": 4,
+      "allocated_gb": 11.52,
+      "reserved_gb": 19.63,
+      "wall_s": 34,
+      "nvsmi_peak_mib": {
+        "0": 20907,
+        "1": 19319
+      },
+      "nvsmi_max_mib": 20907
+    },
+    {
+      "epoch": 5,
+      "allocated_gb": 11.52,
+      "reserved_gb": 19.63,
+      "wall_s": 33,
+      "nvsmi_peak_mib": {
+        "0": 20907,
+        "1": 19319
+      },
+      "nvsmi_max_mib": 20907
+    }
+  ]
+}

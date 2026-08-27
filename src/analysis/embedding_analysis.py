@@ -78,6 +78,7 @@ def load_model_frozen(
         n_aq_rounds          = mc["n_aq_rounds"],
         n_qq_rounds          = mc["n_qq_rounds"],
         agg                  = mc.get("agg", "mean"),
+        use_element_embedding = mc.get("use_element_embedding", True),
         use_residue_embedding = mc.get("use_residue_embedding", True),
         use_bond_edges        = mc.get("use_bond_edges", True),
         use_radial_edges      = mc.get("use_radial_edges", True),

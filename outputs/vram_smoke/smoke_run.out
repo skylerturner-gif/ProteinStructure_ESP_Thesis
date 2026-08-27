@@ -1,0 +1,311 @@
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 373, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 369, in main
+[rank0]:     run_worker(args.name, bf16=args.bf16, n_epochs=args.epochs)
+[rank0]:     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 250, in run_worker
+[rank0]:     nvsmi_epochs = _parse_nvsmi(nvsmi_log, epoch_windows)
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 132, in _parse_nvsmi
+[rank0]:     mem_used = int(parts[2])
+[rank0]: ValueError: invalid literal for int() with base 10: '805 MiB'
+[rank0]:[W715 20:52:10.559698871 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0715 20:52:12.571000 1700218 site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 1700228) of binary: /home/student/miniconda3/envs/pyg_env/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 994, in <module>
+    main()
+    ~~~~^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-07-15_20:52:12
+  host      : gnn
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1700228)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 373, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 369, in main
+[rank0]:     run_worker(args.name, bf16=args.bf16, n_epochs=args.epochs)
+[rank0]:     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 250, in run_worker
+[rank0]:     nvsmi_epochs = _parse_nvsmi(nvsmi_log, epoch_windows)
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 132, in _parse_nvsmi
+[rank0]:     mem_used = int(parts[2])
+[rank0]: ValueError: invalid literal for int() with base 10: '805 MiB'
+[rank0]:[W715 20:55:49.691094687 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0715 20:55:51.651000 1700839 site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 1700849) of binary: /home/student/miniconda3/envs/pyg_env/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 994, in <module>
+    main()
+    ~~~~^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-07-15_20:55:51
+  host      : gnn
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1700849)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 373, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 369, in main
+[rank0]:     run_worker(args.name, bf16=args.bf16, n_epochs=args.epochs)
+[rank0]:     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 250, in run_worker
+[rank0]:     nvsmi_epochs = _parse_nvsmi(nvsmi_log, epoch_windows)
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 132, in _parse_nvsmi
+[rank0]:     mem_used = int(parts[2])
+[rank0]: ValueError: invalid literal for int() with base 10: '805 MiB'
+[rank0]:[W715 20:58:10.595522532 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0715 20:58:12.579000 1701761 site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 1701781) of binary: /home/student/miniconda3/envs/pyg_env/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 994, in <module>
+    main()
+    ~~~~^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-07-15_20:58:12
+  host      : gnn
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1701781)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+
+*****************************************
+Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+*****************************************
+/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 373, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 369, in main
+[rank0]:     run_worker(args.name, bf16=args.bf16, n_epochs=args.epochs)
+[rank0]:     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 250, in run_worker
+[rank0]:     nvsmi_epochs = _parse_nvsmi(nvsmi_log, epoch_windows)
+[rank0]:   File "/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py", line 132, in _parse_nvsmi
+[rank0]:     mem_used = int(parts[2])
+[rank0]: ValueError: invalid literal for int() with base 10: '805 MiB'
+[rank0]:[W715 21:01:12.783841717 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0715 21:01:14.756000 1702582 site-packages/torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 1702597) of binary: /home/student/miniconda3/envs/pyg_env/bin/python
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 994, in <module>
+    main()
+    ~~~~^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home/student/miniconda3/envs/pyg_env/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-07-15_21:01:14
+  host      : gnn
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1702597)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+
+============================================================
+  VRAM smoke: attention_qq6  (5 epochs)  bf16=False
+============================================================
+  836 proteins  |  ~64 batches/rank
+  Epoch 1/5  alloc=25.30GB  resrv=38.70GB  t=40s
+  Epoch 2/5  alloc=25.30GB  resrv=32.10GB  t=38s
+  Epoch 3/5  alloc=25.30GB  resrv=32.10GB  t=38s
+  Epoch 4/5  alloc=25.30GB  resrv=32.10GB  t=38s
+  Epoch 5/5  alloc=25.30GB  resrv=32.10GB  t=38s
+
+============================================================
+  VRAM smoke: distance_qq6  (5 epochs)  bf16=False
+============================================================
+  836 proteins  |  ~64 batches/rank
+  Epoch 1/5  alloc=21.49GB  resrv=37.73GB  t=42s
+  Epoch 2/5  alloc=21.49GB  resrv=33.65GB  t=41s
+  Epoch 3/5  alloc=21.49GB  resrv=33.65GB  t=41s
+  Epoch 4/5  alloc=21.49GB  resrv=33.65GB  t=41s
+  Epoch 5/5  alloc=21.49GB  resrv=33.65GB  t=40s
+
+============================================================
+  VRAM smoke: attention_bf16  (5 epochs)  bf16=True
+============================================================
+  836 proteins  |  ~64 batches/rank
+  Epoch 1/5  alloc=13.47GB  resrv=25.98GB  t=26s
+  Epoch 2/5  alloc=13.47GB  resrv=25.98GB  t=26s
+  Epoch 3/5  alloc=13.47GB  resrv=25.98GB  t=26s
+  Epoch 4/5  alloc=13.47GB  resrv=25.98GB  t=25s
+  Epoch 5/5  alloc=13.47GB  resrv=25.98GB  t=25s
+
+============================================================
+  VRAM smoke: distance_bf16  (5 epochs)  bf16=True
+============================================================
+  836 proteins  |  ~64 batches/rank
+  Epoch 1/5  alloc=11.52GB  resrv=19.63GB  t=34s
+  Epoch 2/5  alloc=11.52GB  resrv=19.63GB  t=34s
+  Epoch 3/5  alloc=11.52GB  resrv=19.63GB  t=34s
+  Epoch 4/5  alloc=11.52GB  resrv=19.63GB  t=34s
+  Epoch 5/5  alloc=11.52GB  resrv=19.63GB  t=33s
+
+[smoke] Launching: /home/student/miniconda3/envs/pyg_env/bin/python -m torch.distributed.run --nproc_per_node=2 /home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py --name attention_qq6 --epochs 5
+[smoke] attention_qq6 failed (exit 1) — continuing.
+
+[smoke] Launching: /home/student/miniconda3/envs/pyg_env/bin/python -m torch.distributed.run --nproc_per_node=2 /home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py --name distance_qq6 --epochs 5
+[smoke] distance_qq6 failed (exit 1) — continuing.
+
+[smoke] Launching: /home/student/miniconda3/envs/pyg_env/bin/python -m torch.distributed.run --nproc_per_node=2 /home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py --name attention_bf16 --epochs 5 --bf16
+[smoke] attention_bf16 failed (exit 1) — continuing.
+
+[smoke] Launching: /home/student/miniconda3/envs/pyg_env/bin/python -m torch.distributed.run --nproc_per_node=2 /home/student/thesis/ProteinStructure_ESP_Thesis/scripts/vram_smoke_5ep.py --name distance_bf16 --epochs 5 --bf16
+[smoke] distance_bf16 failed (exit 1) — continuing.
+
+==============================================================================
+  VRAM Smoke Test — Summary (5-epoch averages, GPU 0 & 1)
+==============================================================================
+Model                   Prec    Alloc avg   Rsvd avg   NvSMI GPU0   NvSMI GPU1   Epoch t
+----------------------------------------------------------------------------------------
+  attention_qq6           (no results yet)
+  distance_qq6            (no results yet)
+  attention_bf16          (no results yet)
+  distance_bf16           (no results yet)
+

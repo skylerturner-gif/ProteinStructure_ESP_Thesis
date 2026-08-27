@@ -22,6 +22,7 @@ must therefore:
 
 from __future__ import annotations
 
+import multiprocessing
 import subprocess
 import sys
 from concurrent.futures import (
@@ -80,12 +81,20 @@ def run_parallel(
     if not arg_tuples:
         return []
 
-    Executor = ThreadPoolExecutor if use_threads else ProcessPoolExecutor
     results: list[tuple[Any, Any]] = []
     n = len(arg_tuples)
     done = 0
 
-    with Executor(max_workers=n_workers) as pool:
+    if use_threads:
+        ctx: dict = {}
+        Executor = ThreadPoolExecutor
+    else:
+        # Use 'spawn' to avoid fork-with-CUDA deadlocks when PyTorch is imported
+        # in the parent process before the pool is created.
+        ctx = {"mp_context": multiprocessing.get_context("spawn")}
+        Executor = ProcessPoolExecutor
+
+    with Executor(max_workers=n_workers, **ctx) as pool:
         futures = {pool.submit(fn, *args): args[0] for args in arg_tuples}
         for future in as_completed(futures):
             key   = futures[future]

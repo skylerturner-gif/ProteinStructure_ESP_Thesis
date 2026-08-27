@@ -65,39 +65,53 @@ class AtomEncoder(nn.Module):
     Map discrete atom attributes to a continuous hidden vector.
 
     Inputs (from HeteroData['atom']):
-      atom_type    — int64 element index  (0..N_ELEMENT_TYPES-1)   — always used
+      atom_type    — int64 element index  (0..N_ELEMENT_TYPES-1)   — ablatable
       residue_type — int64 residue index  (0..N_RESIDUE_TYPES-1)   — ablatable
       bond_count   — int64 number of covalent bonds                — ablatable
 
     Each active input is independently embedded, concatenated, then projected
-    to hidden_dim via a two-layer MLP.
+    to hidden_dim via a two-layer MLP.  The element slot always occupies one
+    component (either a per-type lookup or a shared learned constant when
+    use_element_embedding=False), so n_active >= 1 and proj input dim is always
+    well-defined.
 
     Args:
-        hidden_dim:            output dimensionality
-        use_residue_embedding: include the residue-type embedding (default True)
-        use_bond_count:        include the bond-count projection (default True)
+        hidden_dim:             output dimensionality
+        use_element_embedding:  embed element type (default True); when False,
+                                all atoms share a single learned constant vector
+                                and atom_type is not read from the graph
+        use_residue_embedding:  include the residue-type embedding (default True)
+        use_bond_count:         include the bond-count projection (default True)
     """
 
     def __init__(
         self,
         hidden_dim: int,
+        use_element_embedding: bool = True,
         use_residue_embedding: bool = True,
         use_bond_count:        bool = True,
     ) -> None:
         super().__init__()
+        self.use_element_embedding = use_element_embedding
         self.use_residue_embedding = use_residue_embedding
         self.use_bond_count        = use_bond_count
 
         emb = hidden_dim // 3
         n_active = 1 + int(use_residue_embedding) + int(use_bond_count)
 
-        self.atom_emb  = nn.Embedding(N_ELEMENT_TYPES, emb)
-        self.res_emb   = nn.Embedding(N_RESIDUE_TYPES, emb) if use_residue_embedding else None
-        self.bond_proj = nn.Linear(1, emb)                  if use_bond_count        else None
-        self.proj      = _mlp([emb * n_active, hidden_dim, hidden_dim])
+        self.atom_emb   = nn.Embedding(N_ELEMENT_TYPES, emb) if use_element_embedding  else None
+        self.atom_const = nn.Parameter(torch.zeros(emb))     if not use_element_embedding else None
+        self.res_emb    = nn.Embedding(N_RESIDUE_TYPES, emb) if use_residue_embedding   else None
+        self.bond_proj  = nn.Linear(1, emb)                  if use_bond_count          else None
+        self.proj       = _mlp([emb * n_active, hidden_dim, hidden_dim])
 
     def forward(self, data: HeteroData) -> Tensor:
-        parts = [self.atom_emb(data["atom"].atom_type)]
+        n_atoms = data["atom"].pos.shape[0]
+        if self.atom_emb is not None:
+            atom_type = data["atom"].atom_type.clamp(max=N_ELEMENT_TYPES - 1)
+            parts = [self.atom_emb(atom_type)]
+        else:
+            parts = [self.atom_const.unsqueeze(0).expand(n_atoms, -1)]
         if self.use_residue_embedding:
             parts.append(self.res_emb(data["atom"].residue_type))
         if self.use_bond_count:

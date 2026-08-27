@@ -1,5 +1,9 @@
 # ── Local config (machine-specific paths) ────────────────────────────────────
 config.yaml
+config.yaml.bak
+
+# ── Local Claude Code settings (machine-specific permissions) ────────────────
+.claude/
 
 # ── External data (too large for GitHub) ─────────────────────────────────────
 # All generated protein data lives outside the repo in data_root (see config.yaml)
@@ -95,3 +99,9 @@ io.mc
 # ── Linter / profiler caches ──────────────────────────────────────────────────
 .ruff_cache/
 *.prof
+
+# ── Experimentation infra: sweep configs and driver scripts ──────────────────
+# Not tracked on GitHub — these are throwaway/iterative by nature (one per
+# ablation run) rather than stable project code. Keep locally as needed.
+sweeps/
+*.sh

@@ -24,8 +24,15 @@ Atom node features (integer indices — fed to nn.Embedding in the model)
 
 Query node features
 -------------------
-  pos — (3,) float32 position in Å
-  y   — float32 target ESP value in kT/e  (absent if ESP file not found)
+  pos       — (3,) float32 position in Å
+  y         — float32 target ESP value in kT/e  (absent if ESP file not found)
+  normal    — (3,) float32 unit surface normal   (always attached)
+  curvature — float32 mean curvature magnitude   (always attached)
+
+normal/curvature are always computed and cached regardless of config.yaml's
+features: block — that block only controls whether a given MODEL reads
+them (has_curvature/has_normal at construction time), not whether the data
+exists in the graph.
 
 Edge attributes
 ---------------
@@ -67,9 +74,9 @@ log = get_logger(__name__)
 # ── Atom / residue vocabularies ───────────────────────────────────────────────
 
 ELEMENT_VOCAB: dict[str, int] = {
-    "H": 0, "C": 1, "N": 2, "O": 3, "S": 4, "P": 5,
+    "H": 0, "C": 1, "N": 2, "O": 3, "S": 4,
 }
-N_ELEMENT_TYPES: int = len(ELEMENT_VOCAB) + 1   # 7  (index 6 = unknown)
+N_ELEMENT_TYPES: int = len(ELEMENT_VOCAB) + 1   # 6  (index 5 = unknown)
 
 RESIDUE_VOCAB: dict[str, int] = {
     "ALA": 0, "ARG": 1,  "ASN": 2,  "ASP": 3,  "CYS": 4,
@@ -418,8 +425,12 @@ def build_graph(
     query_esp = esp_data["esp_verts"][q_idx].astype(np.float32)
 
     # ── 5. radial supplementary kNN edges ────────────────────────────────────────────
-    log.info("%s  building radial edges (k=%d)", protein_id, knn_radial)
-    radial_src, radial_dst, radial_dists = _knn_radial(atom_xyz, knn_radial, bond_set)
+    if feat_cfg.get("true_radial", False):
+        log.info("%s  building true radial edges (k=%d, bonds included)", protein_id, knn_radial)
+        radial_src, radial_dst, radial_dists = _knn_self(atom_xyz, knn_radial)
+    else:
+        log.info("%s  building radial edges (k=%d)", protein_id, knn_radial)
+        radial_src, radial_dst, radial_dists = _knn_radial(atom_xyz, knn_radial, bond_set)
 
     # ── 6. Atom→query edges (query-centric) ──────────────────────────────────
     log.info("%s  building AQ edges (k=%d)", protein_id, knn_aq)
@@ -448,16 +459,19 @@ def build_graph(
     data["query"].pos = torch.tensor(query_xyz, dtype=torch.float)
     data["query"].y   = torch.tensor(query_esp, dtype=torch.float)
 
-    # Optional surface geometry features (controlled by config.yaml features:)
-    if feat_cfg.get("query_normal", False):
-        normals = _compute_vertex_normals(verts, faces)
-        data["query"].normal = torch.tensor(normals[q_idx], dtype=torch.float)
-        log.info("%s  attached surface normals to query nodes", protein_id)
+    # Surface geometry features — always computed and attached (cheap, and
+    # purely additive: models with has_normal=False / has_curvature=False
+    # never read these fields). Whether a given MODEL consumes them is a
+    # separate, config/checkpoint-driven decision made at model-construction
+    # time (see AttentionESPN/DistanceESPN's has_curvature/has_normal args) —
+    # this only controls whether the DATA is present in the cache, so a
+    # feature-gated config toggle can never again make a --force graph
+    # rebuild silently drop a field some already-trained checkpoint needs.
+    normals = _compute_vertex_normals(verts, faces)
+    data["query"].normal = torch.tensor(normals[q_idx], dtype=torch.float)
 
-    if feat_cfg.get("query_curvature", False):
-        curvature = _compute_mean_curvature(verts, faces)
-        data["query"].curvature = torch.tensor(curvature[q_idx], dtype=torch.float)
-        log.info("%s  attached mean curvature to query nodes", protein_id)
+    curvature = _compute_mean_curvature(verts, faces)
+    data["query"].curvature = torch.tensor(curvature[q_idx], dtype=torch.float)
 
     # Covalent edges: [bond_order | rbf_dist]
     bond_attr = np.concatenate([bond_orders[:, None], bond_rbf], axis=1)
@@ -488,7 +502,15 @@ def build_graph(
     data.protein_id   = protein_id
     data.n_atoms      = n_atoms
     data.n_query      = n_query
-    data.feature_spec = {k: bool(v) for k, v in feat_cfg.items()}
+    # query_normal/query_curvature are always attached now (see above) —
+    # report them as always present regardless of what config.yaml said at
+    # build time; other keys (e.g. true_radial) still reflect feat_cfg since
+    # those remain genuinely conditional/mutually-exclusive graph variants.
+    data.feature_spec = {
+        **{k: bool(v) for k, v in feat_cfg.items()},
+        "query_normal": True,
+        "query_curvature": True,
+    }
 
     log.info(
         "%s  graph built: atoms=%d  query=%d  bond=%d  radial=%d  aq=%d  qq=%d",

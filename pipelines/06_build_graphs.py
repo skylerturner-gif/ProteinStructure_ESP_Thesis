@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import zipfile
 from pathlib import Path
 
 import torch
@@ -33,6 +34,15 @@ from src.utils.helpers import get_pipeline_logger, notify, timer
 from src.utils.io import update_metadata
 from src.utils.parallel import run_parallel
 from src.utils.paths import ProteinPaths
+
+
+def _verify_graph(path: Path) -> bool:
+    """Quick ZIP-header check — catches partial writes without deserialising tensors."""
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            return bool(zf.namelist())
+    except Exception:
+        return False
 
 
 def _build_one(
@@ -61,7 +71,9 @@ def _build_one(
         with timer() as t:
             data = build_graph(protein_id, data_root)
 
-        torch.save(data, graph_path)
+        tmp_path = graph_path.with_suffix(".pt.tmp")
+        torch.save(data, tmp_path)
+        tmp_path.rename(graph_path)  # atomic on Linux — readers never see a partial write
 
         update_metadata(protein_id, data_root=data_root, data={
             "num_atom_nodes":       int(data["atom"].num_nodes),
@@ -136,12 +148,14 @@ def main() -> None:
     )
 
     n_ok = n_skip = n_fail = 0
+    ok_ids: list[str] = []
 
     if args.workers == 1:
         for protein_id in protein_ids:
             status = _build_one(protein_id, data_root, args.force, log)
             if status == "ok":
-                n_ok   += 1; notify(protein_id, "complete", "graph build")
+                n_ok   += 1; ok_ids.append(protein_id)
+                notify(protein_id, "complete", "graph build")
             elif status == "skip":
                 n_skip += 1; notify(protein_id, "skipped",  "graph build")
             else:
@@ -161,11 +175,43 @@ def main() -> None:
                 continue
             _, status = outcome
             if status == "ok":
-                n_ok   += 1; notify(protein_id, "complete", "graph build")
+                n_ok   += 1; ok_ids.append(protein_id)
+                notify(protein_id, "complete", "graph build")
             elif status == "skip":
                 n_skip += 1; notify(protein_id, "skipped",  "graph build")
             else:
                 n_fail += 1; notify(protein_id, "failed",   "graph build")
+
+    # ── Corruption check + single-threaded retry ──────────────────────────────
+    # Verify every newly written graph with a ZIP-header check (fast, no tensor
+    # deserialisation). Corrupted files are rebuilt sequentially to avoid another
+    # race condition. This catches partial writes that slipped past atomic rename
+    # due to filesystem quirks or NFS buffering.
+    if ok_ids:
+        bad_ids = [
+            pid for pid in ok_ids
+            if not _verify_graph(ProteinPaths(pid, data_root).graph_path())
+        ]
+        if bad_ids:
+            log.warning(
+                "Verification: %d corrupted graph(s) detected — rebuilding single-threaded: %s",
+                len(bad_ids), bad_ids,
+            )
+            print(f"Verification: {len(bad_ids)} corrupted graph(s) — rebuilding single-threaded...")
+            for pid in bad_ids:
+                bad_path = ProteinPaths(pid, data_root).graph_path()
+                bad_path.unlink(missing_ok=True)
+                status = _build_one(pid, data_root, force=True, log=log)
+                if status == "ok":
+                    notify(pid, "complete", "graph build (rebuilt)")
+                    log.info("[%s] Rebuilt successfully after corruption.", pid)
+                else:
+                    n_fail += 1; n_ok -= 1
+                    notify(pid, "failed", "graph build (rebuild failed)")
+                    log.error("[%s] Rebuild after corruption failed.", pid)
+            print(f"Verification: {len(bad_ids)} graph(s) rebuilt.")
+        else:
+            log.info("Verification: all %d newly built graphs are clean.", len(ok_ids))
 
     log.info("Done — ok: %d  skipped: %d  failed: %d", n_ok, n_skip, n_fail)
     print(f"Done — ok: {n_ok}  skipped: {n_skip}  failed: {n_fail}")

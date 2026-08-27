@@ -1,0 +1,61 @@
+{
+  "name": "distance_qq6",
+  "bf16": false,
+  "epochs": [
+    {
+      "epoch": 1,
+      "allocated_gb": 21.49,
+      "reserved_gb": 37.73,
+      "wall_s": 42,
+      "nvsmi_peak_mib": {
+        "0": 37711,
+        "1": 38461
+      },
+      "nvsmi_max_mib": 38461
+    },
+    {
+      "epoch": 2,
+      "allocated_gb": 21.49,
+      "reserved_gb": 33.65,
+      "wall_s": 41,
+      "nvsmi_peak_mib": {
+        "0": 37711,
+        "1": 38461
+      },
+      "nvsmi_max_mib": 38461
+    },
+    {
+      "epoch": 3,
+      "allocated_gb": 21.49,
+      "reserved_gb": 33.65,
+      "wall_s": 41,
+      "nvsmi_peak_mib": {
+        "0": 37711,
+        "1": 38461
+      },
+      "nvsmi_max_mib": 38461
+    },
+    {
+      "epoch": 4,
+      "allocated_gb": 21.49,
+      "reserved_gb": 33.65,
+      "wall_s": 41,
+      "nvsmi_peak_mib": {
+        "0": 37711,
+        "1": 38461
+      },
+      "nvsmi_max_mib": 38461
+    },
+    {
+      "epoch": 5,
+      "allocated_gb": 21.49,
+      "reserved_gb": 33.65,
+      "wall_s": 40,
+      "nvsmi_peak_mib": {
+        "0": 37711,
+        "1": 38461
+      },
+      "nvsmi_max_mib": 38461
+    }
+  ]
+}

@@ -72,6 +72,18 @@ This document records every methodological decision made in the pipeline — wha
 
 ---
 
+## Mesh Singularity Correction
+
+**Decision:** Automatically detect and correct mesh vertices that penetrate too deep into a nearby atom's VdW sphere (a "singularity" — the vertex sits inside the excluded volume rather than on its boundary), inline during mesh generation.
+
+**Config:** `GEOM_THRESHOLD = 0.3` Å in `src/surface/mesh.py`.
+
+**Rationale:** MSMS occasionally produces vertices with penetration depth > ~0.3 Å into the nearest atom's VdW radius, most often in tightly packed or concave regions. Left uncorrected, ESP sampled at that vertex (via trilinear interpolation from the APBS grid) picks up field values from deep inside the low-dielectric interior instead of the true surface value. `build_mesh()` now runs `geom_validity()` against every vertex right after MSMS generation, and any vertex flagged by `needs_fix` is corrected via `resolve_singularities()` before the mesh is saved — this is unconditional, not a flag, so every mesh generated from here on is already clean.
+
+**Retrofit vs. audit:** Structures meshed *before* this fix landed can still carry the defect. `scripts/retrofit_mesh_singularities.py` (fed by `scripts/survey_mesh_singularities.py`) exists to fix those in place, but is run manually, on demand — it is not part of the normal pipeline, which always skips proteins with an existing cached mesh and so will never re-surface this on its own. `scripts/check_mesh_singularities.py` is a separate, read-only audit (writes no ID file, triggers no retrofit) that reports how many already-downloaded structures are affected. As of the last check, 0/1,045 currently-downloaded proteins are affected — the historical retrofit already covers the full active dataset.
+
+---
+
 ## To Be Decided
 
 ### ESP Sampling — Structure
@@ -128,8 +140,10 @@ This document records every methodological decision made in the pipeline — wha
 
 ## Training — Loss Weighting & Gradient Accumulation
 
-**Decision:** Inverse protein size weighting (`inv_size`) and gradient accumulation (2 steps) applied together (`both_batching` configuration).
-**Notebook:** `notebooks/decisions/10_batching_analysis.ipynb`
+**Decision (historical):** Inverse protein size weighting (`inv_size`) and gradient accumulation (2 steps) applied together (`both_batching` configuration).
+**Notebook:** _retired during the notebook restructuring — no longer in the repo._
+
+> **Superseded** — protein-size-weighted loss is now hardcoded always-on and gradient accumulation is no longer part of the active sweep plan; see "Current Core Training Configuration" below. Kept here for the historical rationale.
 
 **Problem addressed:** With dynamic batching over highly variable protein sizes, two issues compound: (1) large proteins dominate the loss gradient proportional to their surface area; (2) small per-protein batches produce high-variance gradient estimates causing train/val loss thrashing.
 
@@ -206,13 +220,54 @@ This document records every methodological decision made in the pipeline — wha
 
 **Decision:** QQ rounds kept (qq=2). Geometry features (surface normals + curvature) **dropped**.
 
-**Notebook:** `notebooks/decisions/11_query_layer_analysis.ipynb`
+**Notebook:** `notebooks/decisions/11_query_rounds_sweep.ipynb`
 
 **Final forward configuration:** AttentionESPN + multi-aggregation + inverse size weighting + gradient accumulation + qq=2, no geometry features.
 
 **QQ rounds are essential:** Removing QQ rounds drops Pearson r from 0.783 → 0.667 (−0.116) — the largest single-component degradation across all ablations. The kNN=8 distance cutoff means each QQ pass reaches only immediate surface neighbours (~few Å). Without multi-hop iteration, the model cannot capture long-range surface continuity: inter-residue charge patterns, surface-scale charge asymmetry, and smooth ESP gradients all require information to diffuse across multiple hops. Two QQ rounds act as a limited surface diffusion process that makes these patterns learnable.
 
 **Geometry features dropped:** The QQ ablation isolates the geometry feature effect without lateral propagation — removing normals + curvature when qq=0 *improves* r from 0.667 to 0.748 (+0.081). Without a surface propagation pathway, explicit geometry injection is disruptive rather than informative. Combined with the marginal and inconsistent gains seen in the original feature-ablation notebook (geometry features underperformed multi-only by −0.021 r), the pattern is clear: the attention model's RBF-biased cross-attention already encodes geometric context implicitly, and adding explicit surface geometry features introduces competing gradient signals regardless of QQ depth.
+
+---
+
+## Current Core Training Configuration (post-restructuring baseline)
+
+**Decision:** As of the Sweep A–F restructuring, the following are fixed, hardcoded defaults for every run — no longer optional flags, and no longer treated as ablation axes:
+
+- **Message-passing rounds:** 4/4/4 (`n_bond_radial_rounds=4`, `n_aq_rounds=4`, `n_qq_rounds=4`).
+- **Aggregation:** `multi` (mean + sum + max concatenation) in every `MessageLayer`.
+- **Query geometry features:** off (`query_curvature`, `query_normal` both `false`) — see QQ Rounds & Geometry Feature Reversal above.
+- **EMA weight averaging:** always on, `ema_decay=0.999`. Previously an optional `use_ema` flag; now hardcoded in `Trainer.__init__` — every run maintains an EMA shadow of the model weights and evaluates/checkpoints from it.
+- **Protein-size-weighted loss:** always on. Previously an optional `protein_weighted` flag gating `inv_size` weighting (see Loss Weighting & Gradient Accumulation above); `ESPLoss.forward()` now unconditionally computes per-graph MSE and averages across graphs in the batch, so every protein contributes equally to the gradient regardless of its query-node count.
+- **Mixed precision:** `bf16` autocast for training/val/inference.
+
+**Superseded:** The `10_batching_analysis.ipynb` (`both_batching`) gradient-accumulation finding is retired as an active axis — that notebook was removed in the restructuring, and gradient accumulation is not part of the current sweep plan (`grad_accum_steps` defaults to 1 in every Sweep A run). The project has moved from tuning individual batching/weighting knobs one at a time to this single fixed, standardized recipe. `pearson_weight` (Sweep A) is the only loss-level axis still being actively swept on top of it; Sweeps B–F re-test the remaining architecture axes (aggregation, query features, QQ rounds, AA/AQ rounds, chemistry ablation) against this same fixed baseline.
+
+---
+
+## Known Issue — Sweep A Baseline Reproducibility (Unresolved, Investigation Paused)
+
+**Status:** Paused, not resolved. Do not re-cite this as closed.
+
+Sweep A's winning config (`checkpoints/phase_a/attention_pw05`), cited throughout `notebooks/decisions/07_loss_function_sweep.ipynb` and every later phase_b–e notebook, was originally recorded at test Pearson r = 0.8926, RMSE = 2.5889. A later fresh re-evaluation of the same checkpoint (`scripts/reevaluate_test_timing.py`, run twice, consistent both times) instead gave r = 0.8898, RMSE = 2.660 — a small but real, reproducible, unexplained shift. bf16 precision and run-to-run randomness were ruled out; the top-priority next step (isolating whether a concurrent `trainer.py` edit — always-on EMA + autocast — caused it, by re-running through the pre-diff `evaluate_test`) was never completed. `attention_pw05`'s original `test_metrics.json`/`test_predictions/` were overwritten in place during the investigation and are not recoverable (`checkpoints/` is outside this git repo and untracked).
+
+Full investigation notes, ruled-out hypotheses, and the priority-ordered next-steps list: `EVAL_REPRODUCIBILITY_INVESTIGATION.md` (repo root).
+
+**Do not run `scripts/reevaluate_test_timing.py` on any other checkpoint without first reading that file** — it now defaults to a safe non-destructive output location (`model_eval/reeval_test_timing/<checkpoint_name>/`), but the underlying r/rmse discrepancy is still unexplained.
+
+---
+
+## Training — DataLoader Worker Configuration
+
+**Decision:** `persistent_workers=False`, `pin_memory=False` for the training/val `DataLoader`, regardless of `num_workers`.
+
+**Alternatives considered:** `persistent_workers=True` + `pin_memory=True` (attempted speed optimization — avoids respawning the worker pool every epoch and enables async H2D copy overlap).
+
+**Rationale:** That combination reliably corrupted data in transit from `DataLoader` workers under the real training config (DDP world_size=2, `num_workers=8`) — `atom_type` values went out of the embedding's valid range and crashed `AtomEncoder`'s `self.atom_emb(atom_type)` with a CUDA device-side assert, reproducing identically on both DistanceESPN and AttentionESPN, on batch 1, every time. Individually cached graph files were verified clean (0/6768 training graphs had any out-of-range index), and the crash never reproduced with `num_workers=0` or with `persistent_workers`/`pin_memory` off — isolating the DataLoader worker path as the cause, not the data itself.
+
+This isn't unique to this codebase: PyTorch Geometric's `Collater` has a known shared-memory leak under `num_workers > 0` ([PyG #3396](https://github.com/pyg-team/pytorch_geometric/issues/3396)), and plain PyTorch has a documented history of `pin_memory` mangling custom container objects passed through `collate_fn` ([#67831](https://github.com/pytorch/pytorch/issues/67831), [#32150](https://github.com/pytorch/pytorch/issues/32150), [#70158](https://github.com/pytorch/pytorch/issues/70158)) plus separate crash/hang reports for the `persistent_workers`+`pin_memory` combination specifically ([#48370](https://github.com/pytorch/pytorch/issues/48370), [#47445](https://github.com/pytorch/pytorch/issues/47445), [#24927](https://github.com/pytorch/pytorch/issues/24927)). Root cause not isolated to a single upstream line; the working theory is PyG's shared-memory batching of heterogeneous graphs (multiple node/edge types needing correct IPC reconstruction) is the fragile part, and `persistent_workers` (workers never respawn, so any leak/staleness accumulates all run) plus `pin_memory` (a second background thread re-walking the same object) both amplify it.
+
+**Current setting:** `num_workers=2` (not 8 — see `sweeps/full_dataset_champions.yaml`), workers respawned every epoch (`persistent_workers=False`). Validated with a full clean run (train → val → checkpoint → test eval, 848 test proteins, zero corruption) on the full 8461-protein dataset. Speed cost: ~45 min/epoch at `num_workers=2` on the full dataset — a 120-epoch run is on the order of days, not hours. Not yet re-isolated whether `pin_memory` or `persistent_workers` alone (rather than the combination) is safe; that's a possible avenue to partially recover the speedup if training time becomes a blocker.
 
 ---
 
@@ -225,4 +280,36 @@ This document records every methodological decision made in the pipeline — wha
 **Significance:** Partial charges are the direct physical source of ESP — the APBS solver computes ESP by treating each atom as a point charge at its PARSE-assigned partial charge. A frozen probe recovering these charges at ~99.5% explained variance confirms the model is not operating as a geometric interpolator; instead, atom representations after the bond and radial message passing rounds encode the charge distribution required for ESP prediction. The probe converged rapidly (30 epochs, MSE 0.0077 → 0.0004), indicating this information is linearly accessible from the embeddings.
 
 **Per-environment accuracy:** Best-predicted environments are H (RMSE=0.012), backbone amide N (RMSE=0.016), and aliphatic C (RMSE=0.025). Hardest is aromatic C (RMSE=0.043), where ring-position-dependent charge variation requires finer chemical context. Several environments show NaN Pearson r because PARSE assigns a fixed charge to all atoms of that type — low RMSE with NaN r indicates correct constant prediction, not failure.
+
+---
+
+## Baseline Models — Non-GNN Reference Points
+
+Three baselines were built to bound and contextualize the heterogeneous-graph model's performance from different directions: a physics-only lower bound, a dense-grid learned alternative, and a surface-only learned alternative. All three read from the same PQR-derived structure files as the primary pipeline. None of them see partial charges as an *input* — matching the epistemological constraint placed on the main GNN (recover charge-dependent behavior from geometry/identity alone) — except the Coulomb baseline, whose entire premise is to be powered directly by the PARSE partial charges instead of learning anything.
+
+### Vacuum Coulomb Baseline — physics floor
+
+**Approach:** No learning. `V(q) = Σ_i q_i · k / r_iq` — vacuum Coulomb potential summed directly over PARSE partial charges read from the PQR file, evaluated at query positions (distance floor `R_MIN=0.5` Å to avoid singularities at atom centers).
+
+**Code:** `src/baseline_models/coulomb/predictor.py` (`CoulombESP`).
+
+**Rationale:** APBS solves the linearised Poisson–Boltzmann equation, which accounts for solvent screening and the low-to-high dielectric boundary at the molecular surface. Vacuum Coulomb has neither. Because this baseline is handed the *exact* partial charges the GNN never sees, and still omits all solvent/dielectric physics, it isolates how much of the APBS ESP signal is "trivial" charge summation versus genuinely dependent on the solvent-boundary geometry the GNN has to infer implicitly from structure alone. It's a lower reference bound rather than a competitor to beat outright — informative either way: if the GNN barely beats it, the model may be leaning on charge-like shortcuts inferred from geometry; if it beats it by a large margin, that's evidence the model is capturing solvent-boundary effects Coulomb structurally cannot represent.
+
+### 3D CNN Baseline — dense voxel-grid alternative
+
+**Approach:** `src/baseline_models/cnn3d/` voxelizes the PQR structure into a 4-channel element-occupancy grid (C/N/O/S counts per voxel, 1 Å resolution, heavy-atom bounding box + 5 Å padding — hydrogens and rare elements dropped, same as the GNN's epistemological footing). `Vox3DCNN` is a 3D U-Net: encoder 4→32→64→128 channels via stride-2 conv blocks, a bottleneck, and a decoder with trilinear-upsample skip connections back to a 1-channel dense ESP grid. Query-node ESP is read off the dense grid via trilinear `grid_sample` at each query's continuous xyz position.
+
+**Code:** `src/baseline_models/cnn3d/{model,voxelizer,dataset,train,evaluate}.py`.
+
+**Rationale:** Dense 3D CNNs are the classical architecture family for voxelized molecular property prediction and are the most direct non-graph competitor. Deliberately kept on the same epistemological footing as the GNN — element identity and shape only, no partial charges — so any performance gap reflects the inductive-bias difference (translation-equivariant dense convolution over a regular grid vs. sparse heterogeneous message passing) rather than an information advantage. Voxel resolution and encoder depth are the main structural constraints: 1 Å voxels bound the geometric precision, and the 3-level encoder bounds the effective receptive field relative to the GNN's kNN/multi-round message passing.
+
+### Surface DGCNN Baseline — surface-only alternative
+
+**Approach:** `src/baseline_models/surface_dgcnn/` treats the mesh surface as a point cloud — xyz + normals + nearest-atom element/residue one-hot (33D per point, still no partial charges). A static kNN graph on 3D coordinates is pre-computed and cached per protein (not rebuilt every forward pass, unlike the original DGCNN's dynamic feature-space graph). Three stacked `EdgeConv` layers (`h_i = max_{j∈N(i)} MLP([h_i, h_j − h_i])`) produce multi-scale per-point embeddings, which are concatenated and projected; each query node gathers its k nearest precomputed surface embeddings, mean-pools them, and passes the result through a small MLP head.
+
+**Code:** `src/baseline_models/surface_dgcnn/{model,dataset,train,evaluate}.py`.
+
+**Rationale:** Isolates the surface-only signal from the primary model's atom+query heterogeneous graph — no atom graph, no atom-level message passing, just surface geometry and local chemical identity. The static-graph/precomputed-cache design is a deliberate engineering simplification (not a modeling choice) to keep the forward pass free of per-step kNN computation.
+
+**Geometry-only variant dropped:** A geometry-only ablation (xyz+normals, 6D, no chemistry — testing whether surface shape alone carries ESP signal) was tried first and scored Pearson r=0.085 on the test set — essentially no signal (see `notebooks/baseline_comparison.ipynb`). Its checkpoint/eval outputs have been deleted and the `use_atom_features` toggle removed from the code; chemistry features (element+residue identity, not charge) are now always on, so this baseline is surface geometry **+** local chemical identity, not a pure geometry test.
 

@@ -27,6 +27,10 @@ Usage
 
     # Skip the first N runs (resume after partial completion)
     python pipelines/run_sweep.py sweeps/ablation_example.yaml --all --skip 2
+
+    # Auto-run analysis (training curves, parity hexbin, sorted predictions) after each run
+    nohup python -u pipelines/run_sweep.py sweeps/ablation_example.yaml --all --analyze \\
+        > nohup_sweep.out 2>&1 &
 """
 
 from __future__ import annotations
@@ -55,16 +59,17 @@ def _write_config(cfg: dict) -> None:
 
 
 def _patch_config(run: dict) -> None:
-    """Merge run's feature/model overrides into config.yaml (in-place)."""
+    """Merge run's feature/model/training overrides into config.yaml (in-place)."""
     cfg = _load_config()
     cfg.setdefault("features", {}).update(run.get("features", {}))
     cfg.setdefault("model",    {}).update(run.get("model",    {}))
+    cfg.setdefault("training", {}).update(run.get("training", {}))
     _write_config(cfg)
 
 
 # ── Rebuild detection ─────────────────────────────────────────────────────────
 
-_GRAPH_FEATURE_KEYS = ("query_curvature", "query_normal")
+_GRAPH_FEATURE_KEYS = ("query_curvature", "query_normal", "true_radial")
 
 
 def _features_changed(prev: dict | None, curr: dict) -> bool:
@@ -78,7 +83,8 @@ def _features_changed(prev: dict | None, curr: dict) -> bool:
 
 # ── Command building ──────────────────────────────────────────────────────────
 
-def _build_cmd(run: dict, filter_args: list[str], rebuild: bool) -> list[str]:
+def _build_cmd(run: dict, filter_args: list[str], rebuild: bool, workers: int = 1,
+               phase: str | None = None) -> list[str]:
     """Build the model_pipeline.py subprocess command for one run."""
     train    = run.get("train",    {})
     training = run.get("training", {})
@@ -87,6 +93,8 @@ def _build_cmd(run: dict, filter_args: list[str], rebuild: bool) -> list[str]:
     ]
     cmd += filter_args
     cmd += ["--suffix", run["suffix"]]
+    if phase:
+        cmd += ["--phase", phase]
 
     if train.get("model"):
         cmd += ["--model", train["model"]]
@@ -95,16 +103,50 @@ def _build_cmd(run: dict, filter_args: list[str], rebuild: bool) -> list[str]:
     if train.get("lr_scheduler"):
         cmd += ["--lr-scheduler", train["lr_scheduler"]]
 
-    if training.get("protein_weighted", False):
-        cmd.append("--protein-weighted")
+    # protein-weighted loss and EMA are always on (see ESPLoss/Trainer) — no
+    # longer forwarded as flags.
     accum = training.get("grad_accum_steps", 1)
     if accum and accum > 1:
         cmd += ["--grad-accum-steps", str(accum)]
+    if "early_stopping_patience" in training:
+        cmd += ["--early-stopping-patience", str(training["early_stopping_patience"])]
+    if training.get("bf16", False):
+        cmd.append("--bf16")
+    if "ema_decay" in training:
+        cmd += ["--ema-decay", str(training["ema_decay"])]
+    if "seed" in training:
+        cmd += ["--seed", str(training["seed"])]
+    if workers > 1:
+        cmd += ["--workers", str(workers)]
 
     if rebuild:
         cmd.append("--force")
 
     return cmd
+
+
+# ── Analysis command ─────────────────────────────────────────────────────────
+
+def _build_analysis_cmd(run: dict, phase: str | None = None) -> list[str] | None:
+    """Build the analyze_model.py command for a completed run, or None if the
+    run doesn't specify a model type (can't resolve checkpoint dir)."""
+    model = run.get("train", {}).get("model")
+    if not model:
+        return None
+    suffix   = run["suffix"]
+    cfg      = _load_config()
+    data_root = Path(cfg["paths"]["data_root"])
+    ckpt_base = data_root.parent / "checkpoints" / phase if phase else data_root.parent / "checkpoints"
+    plot_base = data_root.parent / "model_eval"  / phase if phase else data_root.parent / "model_eval"
+    ckpt_dir  = ckpt_base / f"{model}_{suffix}"
+    plot_dir  = plot_base / f"{model}_{suffix}"
+    return [
+        sys.executable,
+        str(_PROJECT_ROOT / "scripts" / "analyze_model.py"),
+        "--checkpoint-dir", str(ckpt_dir),
+        "--save-plots",     str(plot_dir),
+        "--curves", "--parity", "--sorted-pred", "--spatial-metrics",
+    ]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -139,6 +181,16 @@ def main() -> None:
         "--dry-run", action="store_true",
         help="Print commands without executing them.",
     )
+    parser.add_argument(
+        "--analyze", action="store_true",
+        help="Run analyze_model.py --curves --parity --sorted-pred --spatial-metrics "
+             "after each successful training run. Plots are saved to "
+             "<data_root>/../model_eval/[<phase>/]<model>_<suffix>/.",
+    )
+    parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Graph-build worker processes forwarded to model_pipeline.py (default: 1).",
+    )
 
     args = parser.parse_args()
 
@@ -152,6 +204,7 @@ def main() -> None:
     if not runs:
         print("[sweep] ERROR: sweep YAML has no 'runs' entries.")
         sys.exit(1)
+    phase: str | None = sweep.get("phase")
 
     # ── Build filter args to forward ──────────────────────────────────────────
     filter_args: list[str] = []
@@ -182,6 +235,8 @@ def main() -> None:
     print(f"[sweep] {total} runs defined in {args.sweep_file.name}  "
           f"({'dry run' if args.dry_run else 'live'})\n")
 
+    pending_analysis: list[subprocess.Popen] = []
+
     try:
         prev_run: dict | None = runs[skipped - 1] if skipped > 0 else None
 
@@ -201,7 +256,7 @@ def main() -> None:
                 rebuild = _features_changed(prev_run, run)
                 reason  = "feature change detected" if rebuild else "features unchanged"
 
-            cmd = _build_cmd(run, filter_args, rebuild)
+            cmd = _build_cmd(run, filter_args, rebuild, workers=args.workers, phase=phase)
             rebuild_tag = f"  [REBUILD: {reason}]" if rebuild else ""
 
             print(f"[sweep] [{run_num}/{total}] {run['suffix']}{rebuild_tag}")
@@ -217,12 +272,24 @@ def main() -> None:
                     )
                     sys.exit(result.returncode)
 
+                if args.analyze:
+                    analysis_cmd = _build_analysis_cmd(run, phase=phase)
+                    if analysis_cmd:
+                        print(f"[sweep] [{run_num}/{total}] analyzing (background): {' '.join(analysis_cmd)}\n")
+                        pending_analysis.append(subprocess.Popen(analysis_cmd))
+
             prev_run = run
 
     finally:
         if not args.dry_run:
             _CONFIG_PATH.write_text(original_config)
             print("\n[sweep] config.yaml restored.")
+
+    if pending_analysis:
+        print(f"\n[sweep] Waiting for {len(pending_analysis)} background analysis job(s)...")
+        for proc in pending_analysis:
+            proc.wait()
+        print("[sweep] All analysis jobs complete.")
 
     print(f"\n[sweep] All {total - skipped} run(s) complete.")
 

@@ -13,11 +13,11 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 - This CSV becomes the primary tool for distribution analysis, filtering decisions, and dataset curation across all subsequent tasks.
 - **Depends on:** Existing metadata JSONs from data_gen_pipeline.
 
-### Increase Dataset Size
+### Increase Dataset Size — in progress (pending transfer)
 - **Impact:** Very High | **Effort:** Medium
-- Run `scripts/fetch_uniprot_ids.py` to generate `data/candidate_ids.txt` (~320k candidates), then feed batches through `data_gen_pipeline.py` and `model_pipeline.py`. May require zip/unzip tooling to manage disk space on external data root.
-- Target: several thousand processed proteins with complete pipeline output (structure → ESP → graph) before training at scale.
-- Distribution analysis (length, charge, pLDDT, surface area) using master CSV should guide which proteins to prioritize.
+- `scripts/fetch_uniprot_ids.py` was used to expand the dataset; ~8,500 proteins now have complete pipeline output (structure → ESP → mesh → graph) processed elsewhere, versus the 1,045-protein subset currently in this environment's `data_root`.
+- Next step: rsync everything except `graph/` (non-graph payload ≈80–90GB, well within available disk) into this environment, then rebuild graphs locally (`pipelines/06_build_graphs.py` / `model_pipeline.py --force`) rather than transferring the ~160GB of cached graph tensors.
+- Distribution analysis (length, charge, pLDDT, surface area) using master CSV should guide which proteins to prioritize once the full set is available for training at scale.
 - **Depends on:** Master CSV, fetch_uniprot_ids.py (done).
 
 ### Rerun Tests with Correct Methods
@@ -26,26 +26,26 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 - Specifically: verify `inv_size` normalization, confirm query geometry features (curvature, normal) are disabled unless ablation study, confirm QQ round counts match intended configuration.
 - **Depends on:** Nothing — this unblocks everything else.
 
-### Error Distribution by ESP Value
-- **Impact:** High | **Effort:** Low
-- Plot histogram of prediction error colored by ESP magnitude and net charge. Identify whether the model struggles with extreme positive/negative ESP values, deep pockets, or charge-adjacent surface features.
-- This diagnostic directly informs which proteins or surface regions are hardest and should be weighted differently in loss or included in targeted ablations.
-- **Depends on:** Rerun with correct methods.
-
 ---
 
 ## Tier 2 — Architecture Decisions
 *High-value experiments that answer fundamental questions about the model and inform all future design choices.*
 
-### Full-Body Rotation and Translation Test
+### Full-Body Rotation and Translation Test — DONE
 - **Impact:** Very High | **Effort:** Low
-- Since the model is not truly equivariant, test whether prediction quality is stable under random SO(3) rotations and translations of the input coordinates. If performance is stable: strong argument against the complexity cost of full equivariance. If performance degrades: implement coordinate augmentation during training (random rotations) and compare; this result also motivates investment in Tier 5 equivariant architectures.
-- **Depends on:** Correct-method reruns.
+- Result: `notebooks/decisions/10_invariance_analysis.ipynb` (formerly `09_equivariance_reliance.ipynb`). Non-equivariant architecture is justified — query-features-off models are exactly SE(3)-invariant by construction (verified numerically); query-features-on models show negligible rotational instability (ΔPearson r < 0.001). No equivariant architecture (Tier 5) is warranted.
 
-### Feature Ablation Study
+### Staged Ablation Study (supersedes "Feature Ablation Study") — Sweeps A–F in progress
 - **Impact:** High | **Effort:** Medium
-- Systematically remove individual input features — bond type embedding, residue embedding, bond edges, radial edges, query geometry features (curvature, normal) — and measure impact on Pearson r and RMSE. Identifies which features are load-bearing vs redundant.
-- Early results suggest query geometry features may be less important than expected; ablation will confirm this and guide architecture simplification or feature engineering.
+- The original single feature-ablation task grew into a full staged ablation ("v2" sweep, `sweeps/v2_p*.yaml`, results in `legacy/checkpoints/*_v2_*`) covering aggregation, query features, batching/weighting, and message-passing round counts across both architectures — see `notebooks/decisions/07`–`13`.
+- New standard adopted from that work: EMA + protein-size-weighted loss on top of the 4/4/4-round, multi-agg architecture. Current/next sweeps re-test remaining axes under this standard:
+  - **Sweep A** (in progress) — loss pearson-weight: 0, 0.3, 0.5, 0.8, 1.0. `sweeps/phase_a_loss_weight.yaml`.
+  - **Sweep B** — message-passing aggregation: unchanged, carries forward `agg=multi`.
+  - **Sweep C** — query features: unchanged, carries forward features-off.
+  - **Sweep D** — QQ rounds: 0, 8, 12 (holding AA/AQ at 4).
+  - **Sweep E** — AA/AQ rounds: 4, 8, 12.
+  - **Sweep F** — chemistry ablation: no_residue, no_radial, no_bond, plus a spatial-only (kNN, no element) variant.
+- D/E/F sweep YAMLs get authored once Sweep A's winning `pearson_weight` is locked in as the new baseline.
 - **Depends on:** Correct-method reruns, larger dataset.
 
 ### pLDDT Correlation with Model Error
@@ -71,11 +71,12 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 ## Tier 3 — Publication Credibility
 *Required for the work to be publishable. Build these in parallel with Tier 2 where possible.*
 
-### 3D CNN Baseline
+### Non-GNN Baselines — DONE
 - **Impact:** Very High | **Effort:** High
-- Implement a trusted volumetric baseline — a 3D CNN that predicts ESP on a voxel grid or on surface vertices using local volumetric neighborhoods. Reviewers will require a non-GNN baseline to justify the graph approach.
-- The baseline does not need to match the GNN; it needs to be clearly described and fairly evaluated on the same proteins with the same metrics.
-- **Depends on:** Larger dataset, correct-method reruns.
+- Three non-GNN reference points now exist for the write-up, each isolating a different comparison axis against the heterogeneous-graph model — full architecture and rationale in THESISPROCESSES.md → "Baseline Models — Non-GNN Reference Points":
+  - **Vacuum Coulomb** (`src/baseline_models/coulomb/`, `legacy/checkpoints/baseline/coulomb`) — no learning; analytical physics floor from PARSE partial charges alone, with no solvent-screening/dielectric-boundary physics.
+  - **3D CNN** (`src/baseline_models/cnn3d/`, `legacy/checkpoints/baseline/cnn3d`) — dense voxel-grid 3D U-Net over an element-occupancy grid (C/N/O/S, no partial charges), queried via trilinear `grid_sample`.
+  - **Surface DGCNN** (`src/baseline_models/surface_dgcnn/`, `legacy/checkpoints/baseline/surface_dgcnn_chem`) — EdgeConv point-cloud model on the mesh surface only; base variant is geometry-only (xyz+normals), `_chem` variant adds nearest-atom element/residue identity (still no partial charges).
 
 ### Clean Up Information Loss Comparisons
 - **Impact:** Medium | **Effort:** Low
@@ -109,7 +110,7 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 - **Impact:** Medium | **Effort:** Medium
 - Add a single global node to the heterogeneous graph that aggregates messages from all atom and query nodes, then broadcasts back. This creates a low-cost mechanism for long-range information flow without full pairwise edges. Test whether global features (net charge, protein size) improve predictions on charged or large proteins.
 - Build and validate single global node before attempting multi-global-node variant.
-- **Depends on:** Feature ablation study results.
+- **Depends on:** Staged ablation study results (Sweeps A–F).
 
 ### Conformational Sampling via AlphaFold Seeds
 - **Impact:** Medium | **Effort:** Very High
@@ -170,13 +171,12 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 | Master CSV | 1 | High | Low |
 | Dataset scale-up | 1 | Very High | Medium |
 | Correct-method reruns | 1 | Very High | Low |
-| Error distribution analysis | 1 | High | Low |
-| Rotation/translation test | 2 | Very High | Low |
-| Feature ablation | 2 | High | Medium |
+| Rotation/translation test — DONE | 2 | Very High | Low |
+| Staged ablation (Sweeps A–F) — in progress | 2 | High | Medium |
 | pLDDT–error correlation | 2 | High | Medium |
 | Embedding analysis (3 architectures) | 2 | Very High | Medium |
 | Attention heads → chemistry | 2 | Flagship | Medium |
-| 3D CNN baseline | 3 | Very High | High |
+| Non-GNN baselines — DONE | 3 | Very High | High |
 | Info-loss comparison cleanup | 3 | Medium | Low |
 | Protein analysis tools | 3 | Medium | Low |
 | AF vs PDB ESP comparison | 3 | High | High |

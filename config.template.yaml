@@ -49,35 +49,45 @@ environments:
 features:
   query_curvature: false  # mean curvature scalar on each surface vertex (requires graph rebuild)
   query_normal:    false  # unit surface normal 3-vector on each surface vertex (requires graph rebuild)
+  true_radial:     false  # radial kNN includes bonded pairs instead of excluding them (requires graph rebuild)
 
 model:
   type:                 attention   # distance | attention
-  hidden_dim:           128
+  hidden_dim:           256
   n_rbf:                16
   n_heads:              4           # attention model only
-  n_bond_radial_rounds: 2
-  n_aq_rounds:          3
-  n_qq_rounds:          2
-  agg:                  mean        # mean | sum | max | multi — MessageLayer aggregation (no graph rebuild needed)
+  n_bond_radial_rounds: 4
+  n_aq_rounds:          4
+  n_qq_rounds:          4
+  agg:                  multi       # mean | sum | max | multi — MessageLayer aggregation (no graph rebuild needed)
 
   # Feature ablation — all default true (full model). Set false to ablate.
   # None of these require a graph rebuild; they only change what the model reads.
-  use_residue_embedding: true       # residue-type embedding in AtomEncoder
-  use_bond_edges:        true       # bond-edge message pass in Stage 1 + bond-count in
+  use_residue_embedding:  true      # residue-type embedding in AtomEncoder
+  use_bond_edges:         true      # bond-edge message pass in Stage 1 + bond-count in
                                     # AtomEncoder (gated together — see egnn.py docstring)
-  use_radial_edges:      true       # radial-edge message pass in Stage 1
+  use_radial_edges:       true      # radial-edge message pass in Stage 1
+  use_element_embedding:  true      # element-type embedding in AtomEncoder
 
 # Default training hyperparameters.
 # All values can be overridden via CLI flags in pipelines/model_pipeline.py.
 training:
-  epochs:               100
-  lr:                   3e-4
-  weight_decay:         1e-4
-  pearson_weight:       0.1
-  clip_grad:            1.0
-  lr_patience:          15
-  max_edges_per_batch:  200000
-  sample_frac:          0.05
-  train_frac:           0.8
-  val_frac:             0.1
-  split_seed:           42
+  epochs:                  100
+  lr:                      1e-4
+  weight_decay:            1e-4
+  pearson_weight:          0.5       # Sweep A winner (notebooks/decisions/07_loss_function_sweep.ipynb)
+  clip_grad:               1.0
+  lr_patience:             15
+  early_stopping_patience: 0
+  max_edges_per_batch:     1000000
+  sample_frac:             0.05
+  train_frac:              0.8
+  val_frac:                0.1
+  split_seed:              42
+  seed:                    42
+
+  # Protein-size-weighted loss and EMA weight averaging are always on
+  # (hardcoded in ESPLoss/Trainer) — not configurable here anymore.
+  grad_accum_steps: 1       # >1 to simulate a larger effective batch
+  bf16:             true    # autocast training/val/inference in bfloat16
+  ema_decay:        0.999   # decay factor for the always-on EMA shadow

@@ -130,17 +130,31 @@ def main() -> None:
                         help="Label appended to the checkpoint directory name, e.g. "
                              "'base' → checkpoints/attention_base. "
                              "Has no effect when --checkpoint-dir is set explicitly.")
+    parser.add_argument("--phase", type=str, default=None,
+                        help="Phase folder to nest the checkpoint dir under, e.g. "
+                             "'phase_a' → checkpoints/phase_a/attention_base. "
+                             "Has no effect when --checkpoint-dir is set explicitly.")
     parser.add_argument("--resume", type=Path, default=None,
                         help="Path to a checkpoint to resume training from. "
                              "Ignored when --model both.")
     parser.add_argument("--protein-weighted", action="store_true", default=False,
-                        help="Weight MSE equally per protein to reduce large-protein "
-                             "dominance in greedy batches.")
+                        help=argparse.SUPPRESS)  # deprecated no-op — always on, see ESPLoss
     parser.add_argument("--grad-accum-steps", type=int, default=None,
                         help="Gradient accumulation steps (1 = disabled).")
     parser.add_argument("--early-stopping-patience", type=int, default=None,
                         help="Stop training after this many epochs with no val loss improvement "
                              "(0 or omit to disable).")
+    parser.add_argument("--bf16", action="store_true", default=False,
+                        help="Use bfloat16 mixed precision for training (A100+ recommended).")
+    parser.add_argument("--use-ema", action="store_true", default=False,
+                        help=argparse.SUPPRESS)  # deprecated no-op — always on, see Trainer
+    parser.add_argument("--ema-decay", type=float, default=None,
+                        help="EMA decay factor (forwarded to 07_train.py; default 0.999).")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Global RNG seed forwarded to 07_train.py (overrides config training.seed).")
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="DataLoader worker processes forwarded to 07_train.py "
+                             "(overrides config training.num_workers; 0 = main process).")
 
     args = parser.parse_args()
 
@@ -194,7 +208,10 @@ def main() -> None:
                 ckpt_dir = args.checkpoint_dir
             else:
                 base_name = f"{model_type}_{args.suffix}" if args.suffix else model_type
-                ckpt_dir  = Path(data_root).parent / "checkpoints" / base_name
+                ckpt_root = Path(data_root).parent / "checkpoints"
+                if args.phase:
+                    ckpt_root = ckpt_root / args.phase
+                ckpt_dir  = ckpt_root / base_name
 
             train_args = (
                 data_root_args
@@ -218,16 +235,27 @@ def main() -> None:
             )
             if args.resume and len(model_types) == 1:
                 train_args += ["--resume", str(args.resume)]
-            if args.protein_weighted or train_cfg.get("protein_weighted", False):
-                train_args.append("--protein-weighted")
+            # NOTE: --protein-weighted / --use-ema are no longer forwarded to
+            # 07_train.py — both are hardcoded on in ESPLoss/Trainer. The CLI
+            # flags above are kept accepted-but-inert so in-flight sweep
+            # processes built against the old interface don't break.
             accum = args.grad_accum_steps or train_cfg.get("grad_accum_steps", 1)
             if accum and accum > 1:
                 train_args += ["--grad-accum-steps", str(accum)]
             es = args.early_stopping_patience
             if es is None:
                 es = train_cfg.get("early_stopping_patience", 0)
-            if es and es > 0:
-                train_args += ["--early-stopping-patience", str(es)]
+            train_args += ["--early-stopping-patience", str(es or 0)]
+            if args.bf16:
+                train_args.append("--bf16")
+            if args.ema_decay is not None:
+                train_args += ["--ema-decay", str(args.ema_decay)]
+            seed = args.seed if args.seed is not None else train_cfg.get("seed")
+            if seed is not None:
+                train_args += ["--seed", str(seed)]
+            num_workers = args.num_workers if args.num_workers is not None else train_cfg.get("num_workers")
+            if num_workers is not None:
+                train_args += ["--num-workers", str(num_workers)]
 
             ok = _run_script("pipelines/07_train.py", train_args, nproc=max(1, n_gpus))
             if not ok:

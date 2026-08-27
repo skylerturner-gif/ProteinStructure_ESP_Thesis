@@ -103,6 +103,127 @@ def offset_points(points: np.ndarray, normals: np.ndarray, offset: float) -> np.
     return (points + offset * normals).astype(np.float32)
 
 
+# ── Singularity resolution ──────────────────────────────────────────────────────
+
+def atom_coords_radii_from_pqr(pqr_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Parse atom coordinates and PARSE-forcefield radii from a PQR file.
+
+    PQR ATOM line format (space-delimited):
+        ATOM serial name resname chain resseq x y z charge radius
+
+    Zero-radius atoms (hydrogens under the PARSE force field) are excluded to
+    match the filtering in xyzr_from_pqr() — the function that feeds MSMS when
+    building the mesh. Including them would allow the KDTree nearest-neighbor
+    query to return a zero-radius H as "nearest," making penetration = radius -
+    dist always negative and masking genuine surface defects in heavy atoms.
+
+    Returns:
+        atom_xyz:   (M, 3) float32 heavy-atom centers
+        atom_radii: (M,)   float32 PARSE radii, Å  (all > 0)
+    """
+    coords, radii = [], []
+    with open(pqr_path) as f:
+        for line in f:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            fields = line.split()
+            if len(fields) < 10:
+                continue
+            radius = float(fields[9])
+            if radius <= 0:
+                continue
+            coords.append((float(fields[5]), float(fields[6]), float(fields[7])))
+            radii.append(radius)
+    return np.array(coords, dtype=np.float32), np.array(radii, dtype=np.float32)
+
+
+def resolve_singularities(
+    sample_pts: np.ndarray,
+    atom_xyz: np.ndarray,
+    atom_radii: np.ndarray,
+    margin: float = 0.15,
+    max_iters: int = 15,
+    max_displacement: float = 2.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Push ESP-sampling points that fall inside an atom's radius out to just
+    past that atom's surface.
+
+    The normal-offset step (offset_points) usually clears a vertex's sample
+    point from the SES boundary, but in reentrant/cusp mesh regions the local
+    surface normal is not a reliable "away from every nearby atom" direction —
+    the offset point can still land inside an atom's PARSE radius, where
+    trilinear interpolation samples the steep near-field of a (spl2-smoothed)
+    point charge rather than a physically meaningful solvent-side potential.
+
+    Correction pushes along the atom→point vector of whichever atom is
+    currently violated (not the mesh normal), which is the minimal move that
+    actually escapes the singularity. Iterates because escaping one atom can
+    land inside a second, tightly-packed neighbour; capped at max_iters /
+    max_displacement so pathological geometry (e.g. a point buried deep in a
+    cluster of atoms) cannot be corrected and is instead flagged for neighbor
+    interpolation (see sample_esp).
+
+    Args:
+        sample_pts:  (N, 3) ESP sampling points (already normal-offset)
+        atom_xyz:    (M, 3) atom centers
+        atom_radii:  (M,) PARSE radii, Å
+        margin:      extra clearance pushed beyond the atom radius, Å
+        max_iters:   maximum correction passes
+        max_displacement: give up on a point once its total displacement from
+                     the original position would exceed this, Å; the point is
+                     left at its current position and flagged in stuck_mask
+
+    Returns:
+        corrected_pts: (N, 3) float32 — unchanged except at resolved points
+        moved_mask:    (N,) bool — True where a correction was applied
+        stuck_mask:    (N,) bool — True where the point still violates after
+                       all iterations (displacement cap exceeded); caller
+                       should interpolate these from mesh neighbors
+    """
+    pts      = sample_pts.astype(np.float32).copy()
+    original = sample_pts.astype(np.float32)
+    moved    = np.zeros(len(pts), dtype=bool)
+    tree     = cKDTree(atom_xyz)
+
+    for _ in range(max_iters):
+        dist, nearest = tree.query(pts, k=1)
+        violating = dist < atom_radii[nearest]
+        if not violating.any():
+            break
+
+        centers   = atom_xyz[nearest[violating]]
+        direction = pts[violating] - centers
+        norm      = np.linalg.norm(direction, axis=1, keepdims=True)
+        # Degenerate case: sample point coincides with the atom center.
+        degenerate = norm[:, 0] < 1e-6
+        direction[degenerate] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        norm[degenerate] = 1.0
+        direction = direction / norm
+
+        target_dist = atom_radii[nearest[violating]] + margin
+        candidate   = centers + direction * target_dist[:, None]
+
+        idx           = np.where(violating)[0]
+        displacement  = np.linalg.norm(candidate - original[idx], axis=1)
+        within_cap    = displacement <= max_displacement
+
+        pts[idx[within_cap]]   = candidate[within_cap]
+        moved[idx[within_cap]] = True
+
+        if not within_cap.all():
+            # Points exceeding the displacement cap cannot be corrected.
+            # Leave them in place; they are returned in stuck_mask.
+            break
+
+    # Identify any points still inside an atom after all iterations.
+    dist_final, nearest_final = tree.query(pts, k=1)
+    stuck_mask = dist_final < atom_radii[nearest_final]
+
+    return pts, moved, stuck_mask
+
+
 # ── DX interpolation ─────────────────────────────────────────────────────────
 
 def trilinear_esp(axes: tuple, grid: np.ndarray, points: np.ndarray) -> np.ndarray:
@@ -388,6 +509,41 @@ def _save_npz(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _interpolate_from_neighbors(
+    esp_verts: np.ndarray,
+    stuck_mask: np.ndarray,
+    faces: np.ndarray,
+) -> np.ndarray:
+    """
+    Replace ESP values at stuck vertices with the mean of their unstuck
+    mesh neighbors.  Stuck vertices whose every neighbor is also stuck
+    are left unchanged (extremely rare pathological geometry).
+    """
+    if not stuck_mask.any():
+        return esp_verts
+
+    esp_verts = esp_verts.copy()
+    # Build edge list: each triangle contributes 3 undirected edges.
+    edges = np.concatenate([
+        faces[:, [0, 1]],
+        faces[:, [1, 2]],
+        faces[:, [2, 0]],
+    ], axis=0)  # (3F, 2)
+
+    for idx in np.where(stuck_mask)[0]:
+        nbr_mask_a = edges[:, 0] == idx
+        nbr_mask_b = edges[:, 1] == idx
+        nbrs = np.unique(np.concatenate([
+            edges[nbr_mask_a, 1],
+            edges[nbr_mask_b, 0],
+        ]))
+        good_nbrs = nbrs[~stuck_mask[nbrs]]
+        if len(good_nbrs) > 0:
+            esp_verts[idx] = float(np.mean(esp_verts[good_nbrs]))
+
+    return esp_verts
+
+
 def sample_esp(
     protein_id: str,
     data_root: Path,
@@ -430,6 +586,10 @@ def sample_esp(
         plog.error("Missing input file: %s", p.mesh_path)
         return False
 
+    if not p.pqr_path.exists():
+        plog.error("Missing input file: %s", p.pqr_path)
+        return False
+
     if grid_data is None:
         if not p.dx_path.exists():
             plog.error("Missing .dx file and no grid_data supplied: %s", p.dx_path)
@@ -455,8 +615,35 @@ def sample_esp(
     axes, grid = grid_data if grid_data is not None else read_dx(p.dx_path)
     sample_pts = offset_points(verts, normals, normal_offset)
 
+    atom_xyz, atom_radii = atom_coords_radii_from_pqr(p.pqr_path)
+    pre_correction_pts = sample_pts
+    sample_pts, resolved_mask, stuck_mask = resolve_singularities(
+        sample_pts, atom_xyz, atom_radii,
+    )
+    if resolved_mask.any():
+        max_disp = float(np.linalg.norm(
+            (sample_pts - pre_correction_pts)[resolved_mask], axis=1,
+        ).max())
+        plog.info(
+            "Resolved %d / %d sample points that fell inside an atom's radius "
+            "(near-field interpolation singularity)  max_displacement=%.2f Å",
+            int(resolved_mask.sum()), len(sample_pts), max_disp,
+        )
+    if stuck_mask.any():
+        plog.warning(
+            "%s: %d sample point(s) could not be pushed clear within the "
+            "displacement cap — ESP will be interpolated from mesh neighbors",
+            protein_id, int(stuck_mask.sum()),
+        )
+
     with timer() as t:
         esp_verts = trilinear_esp(axes, grid, sample_pts)
+        if stuck_mask.any():
+            esp_verts = _interpolate_from_neighbors(esp_verts, stuck_mask, faces)
+            plog.info(
+                "Neighbor-interpolated ESP at %d stuck vertex/vertices",
+                int(stuck_mask.sum()),
+            )
         esp_faces = interpolate_faces_from_verts(faces, esp_verts)
 
         n_query   = max(1, int(len(verts) * sample_frac))

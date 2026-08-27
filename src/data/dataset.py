@@ -88,13 +88,22 @@ class ProteinGraphDataset(Dataset):
             data = torch.load(graph_path, weights_only=False)
             current_spec = get_config().get("features", {})
             cached_spec  = getattr(data, "feature_spec", None)
-            if cached_spec is not None and cached_spec != current_spec:
-                raise RuntimeError(
-                    f"Feature spec mismatch for '{protein_id}'.\n"
-                    f"  Cached: {cached_spec}\n"
-                    f"  Config: {current_spec}\n"
-                    "Rebuild graphs with pipelines/06_build_graphs.py --all --force"
-                )
+            if cached_spec is not None:
+                # A cached graph is valid if every feature the current config
+                # ENABLES is also present in the cached graph. Extra features
+                # in the cache (e.g. curvature built for Phase 2 but not
+                # needed by a Phase 1 model) are silently ignored — the model
+                # only reads what its has_curvature/has_normal flags request.
+                missing = [k for k, v in current_spec.items()
+                           if v and not cached_spec.get(k)]
+                if missing:
+                    raise RuntimeError(
+                        f"Feature spec mismatch for '{protein_id}'.\n"
+                        f"  Cached: {cached_spec}\n"
+                        f"  Config: {current_spec}\n"
+                        f"  Missing features: {missing}\n"
+                        "Rebuild graphs with pipelines/06_build_graphs.py --all --force"
+                    )
 
         if self.transform is not None:
             data = self.transform(data)

@@ -77,6 +77,8 @@ class Trainer:
         early_stopping_patience: int = 0,
         extra_state: dict[str, Any] | None = None,
         rank: int = 0,
+        bf16: bool = False,
+        ema_decay: float = 0.999,
     ) -> None:
         self.model          = model.to(device)
         self.optimizer      = optimizer
@@ -90,33 +92,47 @@ class Trainer:
         self.extra_state             = extra_state or {}
         self.rank                    = rank
         self.is_main                 = (rank == 0)
+        self.bf16                    = bf16
+        self.ema_decay               = ema_decay
 
         self.best_val_loss  = float("inf")
         self._epochs_no_improve = 0
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+        # EMA shadow weights — initialised from the model's starting state.
+        # Always tracked; best_model.pt uses these, latest_model.pt uses raw
+        # weights (see _save_checkpoint).
+        raw = model.module if hasattr(model, "module") else model
+        self._ema_state: dict = {
+            k: v.clone().detach().float()
+            for k, v in raw.state_dict().items()
+        }
+
         self.history: dict[str, list] = {
             "epoch": [], "train_loss": [], "val_loss": [],
             "val_rmse": [], "val_pearson_r": [], "lr": [],
+            "peak_vram_gb": [], "epoch_time_s": [],
         }
 
     # ── Single epoch loops ────────────────────────────────────────────────────
 
     def train_epoch(self, loader) -> dict[str, float]:
-        """Run one training epoch. Returns {'loss': float}."""
+        """Run one training epoch. Returns {'loss': float, 'peak_vram_gb': float}."""
         self.model.train()
         total_loss = 0.0
         n_batches  = 0
 
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
         self.optimizer.zero_grad()
         for step_idx, data in enumerate(loader):
-            data   = data.to(self.device)
-            pred   = self.model(data)
-            target = data["query"].y
-            batch  = data["query"].batch
-
-            # Scale loss so accumulated gradients match a single-step update.
-            loss = self.loss_fn(pred, target, batch) / self.grad_accum_steps
+            data = data.to(self.device, non_blocking=True)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.bf16):
+                pred   = self.model(data)
+                target = data["query"].y
+                batch  = data["query"].batch
+                # Scale loss so accumulated gradients match a single-step update.
+                loss = self.loss_fn(pred, target, batch) / self.grad_accum_steps
             loss.backward()
             total_loss += loss.item() * self.grad_accum_steps   # track unscaled
             n_batches  += 1
@@ -130,8 +146,19 @@ class Trainer:
                     )
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                if self._ema_state is not None:
+                    raw = self.model.module if hasattr(self.model, "module") else self.model
+                    with torch.no_grad():
+                        for k, v in raw.state_dict().items():
+                            self._ema_state[k].mul_(self.ema_decay).add_(
+                                v.detach().float(), alpha=1.0 - self.ema_decay
+                            )
 
-        return {"loss": total_loss / max(n_batches, 1)}
+        peak_gb = (
+            torch.cuda.max_memory_allocated(self.device) / 1024 ** 3
+            if self.device.type == "cuda" else 0.0
+        )
+        return {"loss": total_loss / max(n_batches, 1), "peak_vram_gb": peak_gb}
 
     def val_epoch(self, loader) -> dict[str, float]:
         """
@@ -146,12 +173,13 @@ class Trainer:
 
         with torch.no_grad():
             for data in loader:
-                data   = data.to(self.device)
-                pred   = self.model(data)
+                data = data.to(self.device, non_blocking=True)
+                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.bf16):
+                    pred = self.model(data)
+                pred   = pred.float()
                 target = data["query"].y
                 batch  = data["query"].batch
-
-                loss = self.loss_fn(pred, target, batch)
+                loss   = self.loss_fn(pred, target, batch)
                 total_loss   += loss.item()
                 total_sq_err += ((pred - target) ** 2).sum().item()
                 total_n      += target.shape[0]
@@ -198,9 +226,10 @@ class Trainer:
         if self.is_main:
             print(
                 f"\n{'Epoch':>6}  {'Train loss':>11}  {'Val loss':>10}  "
-                f"{'RMSE':>8}  {'Pearson r':>10}  {'LR':>10}"
+                f"{'RMSE':>8}  {'Pearson r':>10}  {'LR':>10}",
+                flush=True,
             )
-            print("-" * 65)
+            print("-" * 65, flush=True)
 
         for epoch in range(1, n_epochs + 1):
             # Let samplers (DynamicBatchSampler, DistributedSampler, etc.)
@@ -208,10 +237,17 @@ class Trainer:
             if hasattr(train_loader.batch_sampler, "set_epoch"):
                 train_loader.batch_sampler.set_epoch(epoch)
 
-            t0          = time.perf_counter()
-            train_m     = self.train_epoch(train_loader)
-            val_m       = self.val_epoch(val_loader)
-            elapsed     = time.perf_counter() - t0
+            t0      = time.perf_counter()
+            train_m = self.train_epoch(train_loader)
+            if self._ema_state is not None:
+                raw = self.model.module if hasattr(self.model, "module") else self.model
+                raw_state = {k: v.clone() for k, v in raw.state_dict().items()}
+                raw.load_state_dict({k: v.to(raw_state[k].dtype) for k, v in self._ema_state.items()})
+                val_m = self.val_epoch(val_loader)
+                raw.load_state_dict(raw_state)
+            else:
+                val_m = self.val_epoch(val_loader)
+            elapsed = time.perf_counter() - t0
 
             current_lr  = self.optimizer.param_groups[0]["lr"]
             if isinstance(self.scheduler,
@@ -232,25 +268,29 @@ class Trainer:
                 if is_best:
                     self._save_checkpoint("best_model.pt", epoch, val_m)
 
+                peak_gb = train_m.get("peak_vram_gb", 0.0)
                 self.history["epoch"].append(epoch)
                 self.history["train_loss"].append(train_m["loss"])
                 self.history["val_loss"].append(val_m["loss"])
                 self.history["val_rmse"].append(val_m["rmse"])
                 self.history["val_pearson_r"].append(val_m["pearson_r"])
                 self.history["lr"].append(current_lr)
+                self.history["peak_vram_gb"].append(peak_gb)
+                self.history["epoch_time_s"].append(round(elapsed, 1))
                 self._save_metrics_csv()
 
                 marker = " *" if is_best else ""
                 print(
                     f"{epoch:>6}  {train_m['loss']:>11.4f}  {val_m['loss']:>10.4f}  "
                     f"{val_m['rmse']:>8.4f}  {val_m['pearson_r']:>10.4f}  "
-                    f"{current_lr:>10.2e}{marker}"
+                    f"{current_lr:>10.2e}  {peak_gb:>6.1f}GB{marker}",
+                    flush=True,
                 )
                 log.info(
                     "epoch=%d  train_loss=%.4f  val_loss=%.4f  "
-                    "rmse=%.4f  pearson_r=%.4f  lr=%.2e  t=%.1fs",
+                    "rmse=%.4f  pearson_r=%.4f  lr=%.2e  peak_vram=%.1fGB  t=%.1fs",
                     epoch, train_m["loss"], val_m["loss"],
-                    val_m["rmse"], val_m["pearson_r"], current_lr, elapsed,
+                    val_m["rmse"], val_m["pearson_r"], current_lr, peak_gb, elapsed,
                 )
 
             if (
@@ -275,10 +315,16 @@ class Trainer:
     ) -> None:
         path = self.checkpoint_dir / filename
         raw = self.model.module if hasattr(self.model, "module") else self.model
+        # best_model.pt stores EMA weights when EMA is enabled; latest_model.pt
+        # always stores raw weights so training can resume from a consistent state.
+        if self._ema_state is not None and filename == "best_model.pt":
+            model_state = {k: v.to(raw.state_dict()[k].dtype) for k, v in self._ema_state.items()}
+        else:
+            model_state = raw.state_dict()
         torch.save(
             {
                 "epoch":           epoch,
-                "model_state":     raw.state_dict(),
+                "model_state":     model_state,
                 "optimizer_state": self.optimizer.state_dict(),
                 "scheduler_state": self.scheduler.state_dict(),
                 "val_loss":        val_metrics["loss"],
@@ -352,6 +398,7 @@ def evaluate_test(
     *,
     checkpoint_dir: Path,
     predictions_dir: Path | None = None,
+    bf16: bool = False,
 ) -> dict:
     """
     Run inference on a test dataset, compute per-protein metrics, and
@@ -398,6 +445,8 @@ def evaluate_test(
 
     loader = PyGLoader(test_ds, batch_size=1, shuffle=False)
     model.eval()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     per_protein: dict[str, dict] = {}
     total_sq_err  = 0.0
@@ -406,12 +455,32 @@ def evaluate_test(
     total_loss    = 0.0
     pearson_vals: list[float] = []
 
+    # Warmup: first CUDA forward pass includes kernel compilation/caching
+    # overhead that would skew the very first protein's timing. Run one
+    # throwaway pass on the first batch before the timed loop starts.
+    if device.type == "cuda" and len(test_ds) > 0:
+        warmup_data = next(iter(loader)).to(device)
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
+            model(warmup_data)
+        torch.cuda.synchronize(device)
+
+    inference_times: list[float] = []
+
     with torch.no_grad():
         for i, data in enumerate(loader):
             protein_id = test_ds.protein_ids[i]
             data       = data.to(device)
 
-            pred   = model(data)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            t0 = time.perf_counter()
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
+                pred = model(data)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            inference_time = time.perf_counter() - t0
+
+            pred   = pred.float()
             target = data["query"].y
             batch  = data["query"].batch
 
@@ -431,12 +500,14 @@ def evaluate_test(
             total_abs_err += abs_err
             total_n       += n
             pearson_vals.append(r)
+            inference_times.append(inference_time)
 
             per_protein[protein_id] = {
-                "rmse":          float((sq_err / n) ** 0.5),
-                "mae":           float(abs_err / n),
-                "pearson_r":     float(r),
-                "n_query_nodes": int(n),
+                "rmse":              float((sq_err / n) ** 0.5),
+                "mae":               float(abs_err / n),
+                "pearson_r":         float(r),
+                "n_query_nodes":     int(n),
+                "inference_time_s":  round(inference_time, 5),
             }
 
             if predictions_dir is not None:
@@ -448,12 +519,19 @@ def evaluate_test(
                 )
 
     n_proteins = len(per_protein)
+    peak_vram_gb = (
+        torch.cuda.max_memory_allocated(device) / 1024 ** 3
+        if device.type == "cuda" else 0.0
+    )
     global_metrics = {
-        "loss":       float(total_loss / max(len(loader), 1)),
-        "rmse":       float((total_sq_err  / max(total_n, 1)) ** 0.5),
-        "mae":        float(total_abs_err  / max(total_n, 1)),
-        "pearson_r":  float(sum(pearson_vals) / max(len(pearson_vals), 1)),
-        "n_proteins": n_proteins,
+        "loss":         float(total_loss / max(len(loader), 1)),
+        "rmse":         float((total_sq_err  / max(total_n, 1)) ** 0.5),
+        "mae":          float(total_abs_err  / max(total_n, 1)),
+        "pearson_r":    float(sum(pearson_vals) / max(len(pearson_vals), 1)),
+        "n_proteins":   n_proteins,
+        "peak_vram_gb": round(peak_vram_gb, 2),
+        "total_inference_time_s": round(sum(inference_times), 4),
+        "mean_inference_time_s":  round(sum(inference_times) / max(len(inference_times), 1), 5),
     }
 
     results = {"global": global_metrics, "per_protein": per_protein}

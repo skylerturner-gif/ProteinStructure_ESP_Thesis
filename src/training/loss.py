@@ -58,22 +58,22 @@ class ESPLoss(nn.Module):
     MSE drives accurate absolute values; the Pearson term rewards correct
     spatial patterning regardless of global scale.
 
+    MSE is always computed per-protein and averaged equally across proteins
+    (not per-node) so large proteins don't dominate the batch gradient —
+    this is the standard as of the EMA/protein-weighted baseline adopted in
+    Sweep A, not a configurable option.
+
     Args:
-        pearson_weight:   weight for the Pearson term (default 0.1).
-                          Set to 0.0 to use pure MSE.
-        protein_weighted: if True, compute MSE per-protein and average equally
-                          across proteins so large proteins don't dominate
-                          (default False — standard node-averaged MSE).
+        pearson_weight: weight for the Pearson term (default 0.1).
+                        Set to 0.0 to use pure MSE.
     """
 
     def __init__(
         self,
-        pearson_weight:   float = 0.1,
-        protein_weighted: bool  = False,
+        pearson_weight: float = 0.1,
     ) -> None:
         super().__init__()
-        self.pearson_weight   = pearson_weight
-        self.protein_weighted = protein_weighted
+        self.pearson_weight = pearson_weight
 
     def forward(self, pred: Tensor, target: Tensor, batch: Tensor) -> Tensor:
         """
@@ -85,20 +85,16 @@ class ESPLoss(nn.Module):
         Returns:
             Scalar loss tensor.
         """
-        if self.protein_weighted:
-            n_graphs = int(batch.max().item()) + 1
-            mse_per_graph = torch.zeros(n_graphs, device=pred.device)
-            for g in range(n_graphs):
-                mask = batch == g
-                mse_per_graph[g] = F.mse_loss(pred[mask], target[mask])
-            mse = mse_per_graph.mean()
-        else:
-            mse = F.mse_loss(pred, target)
+        n_graphs = int(batch.max().item()) + 1
+        mse_per_graph = torch.zeros(n_graphs, device=pred.device)
+        for g in range(n_graphs):
+            mask = batch == g
+            mse_per_graph[g] = F.mse_loss(pred[mask], target[mask])
+        mse = mse_per_graph.mean()
 
         if self.pearson_weight == 0.0:
             return mse
 
-        n_graphs = int(batch.max().item()) + 1
         pearson_losses = torch.zeros(n_graphs, device=pred.device)
         for g in range(n_graphs):
             mask = batch == g
@@ -108,7 +104,4 @@ class ESPLoss(nn.Module):
         return mse + self.pearson_weight * pearson_losses.mean()
 
     def __repr__(self) -> str:
-        return (
-            f"ESPLoss(pearson_weight={self.pearson_weight}, "
-            f"protein_weighted={self.protein_weighted})"
-        )
+        return f"ESPLoss(pearson_weight={self.pearson_weight})"
