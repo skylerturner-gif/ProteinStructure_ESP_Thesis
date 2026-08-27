@@ -33,7 +33,7 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 
 ### Full-Body Rotation and Translation Test — DONE
 - **Impact:** Very High | **Effort:** Low
-- Result: `notebooks/decisions/10_invariance_analysis.ipynb` (formerly `09_equivariance_reliance.ipynb`). Non-equivariant architecture is justified — query-features-off models are exactly SE(3)-invariant by construction (verified numerically); query-features-on models show negligible rotational instability (ΔPearson r < 0.001). No equivariant architecture (Tier 5) is warranted.
+- Result: `notebooks/decisions/11_invariance_analysis.ipynb` (formerly `09_equivariance_reliance.ipynb`). Non-equivariant architecture is justified — query-features-off models are exactly SE(3)-invariant by construction (verified numerically); query-features-on models show negligible rotational instability (ΔPearson r < 0.001). No equivariant architecture (Tier 5) is warranted.
 
 ### Staged Ablation Study (supersedes "Feature Ablation Study") — Sweeps A–F in progress
 - **Impact:** High | **Effort:** Medium

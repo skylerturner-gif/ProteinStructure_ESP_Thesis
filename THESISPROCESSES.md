@@ -220,7 +220,7 @@ This document records every methodological decision made in the pipeline — wha
 
 **Decision:** QQ rounds kept (qq=2). Geometry features (surface normals + curvature) **dropped**.
 
-**Notebook:** `notebooks/decisions/11_query_rounds_sweep.ipynb`
+**Notebook:** `notebooks/decisions/12_query_rounds_sweep.ipynb`
 
 **Final forward configuration:** AttentionESPN + multi-aggregation + inverse size weighting + gradient accumulation + qq=2, no geometry features.
 
