@@ -19,7 +19,7 @@ checkpoints/phase_a/attention_pw05/test_metrics.json + test_predictions/ in
 place, the fresh numbers didn't match the previously-recorded/cited values,
 and the original files could not be recovered (checkpoints/ lives outside
 the git repo, so there was no version history to fall back on). See
-.claude/EVAL_REPRODUCIBILITY_INVESTIGATION.md for the full incident writeup.
+EVAL_REPRODUCIBILITY_INVESTIGATION.md for the full incident writeup.
 
 Pass --in-place to restore the old overwrite-the-checkpoint-dir behavior —
 only do this once the discrepancy in that doc is understood, and back up
@@ -159,7 +159,7 @@ def main() -> None:
                         help="DANGEROUS: overwrite test_metrics.json + test_predictions/ "
                              "inside the source checkpoint dir, like this script used to "
                              "do unconditionally. Back up those files yourself first — see "
-                             ".claude/EVAL_REPRODUCIBILITY_INVESTIGATION.md for why this "
+                             "EVAL_REPRODUCIBILITY_INVESTIGATION.md for why this "
                              "default was changed.")
     parser.add_argument("--seed", type=int, default=42,
                         help="RNG seed (random/numpy/torch), matching pipelines/07_train.py's "

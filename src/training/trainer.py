@@ -110,8 +110,9 @@ class Trainer:
 
         self.history: dict[str, list] = {
             "epoch": [], "train_loss": [], "val_loss": [],
-            "val_rmse": [], "val_pearson_r": [], "lr": [],
-            "peak_vram_gb": [], "epoch_time_s": [],
+            "val_rmse": [], "val_pearson_r": [],
+            "val_loss_raw": [], "val_rmse_raw": [], "val_pearson_r_raw": [],
+            "lr": [], "peak_vram_gb": [], "epoch_time_s": [],
         }
 
     # ── Single epoch loops ────────────────────────────────────────────────────
@@ -239,6 +240,13 @@ class Trainer:
 
             t0      = time.perf_counter()
             train_m = self.train_epoch(train_loader)
+
+            # Raw (non-EMA) validation, on the weights train_epoch just left
+            # in place — logged alongside the EMA validation below so the two
+            # can be compared directly (metrics.csv val_*_raw columns).
+            # Checkpoint selection still uses the EMA val_loss only.
+            val_m_raw = self.val_epoch(val_loader)
+
             if self._ema_state is not None:
                 raw = self.model.module if hasattr(self.model, "module") else self.model
                 raw_state = {k: v.clone() for k, v in raw.state_dict().items()}
@@ -274,6 +282,9 @@ class Trainer:
                 self.history["val_loss"].append(val_m["loss"])
                 self.history["val_rmse"].append(val_m["rmse"])
                 self.history["val_pearson_r"].append(val_m["pearson_r"])
+                self.history["val_loss_raw"].append(val_m_raw["loss"])
+                self.history["val_rmse_raw"].append(val_m_raw["rmse"])
+                self.history["val_pearson_r_raw"].append(val_m_raw["pearson_r"])
                 self.history["lr"].append(current_lr)
                 self.history["peak_vram_gb"].append(peak_gb)
                 self.history["epoch_time_s"].append(round(elapsed, 1))

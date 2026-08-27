@@ -10,7 +10,7 @@ cache. `true_radial` is not additive like curvature/normal (a graph can't
 have both the bond-filtered and true-kNN radial edge sets at once), so
 building it in place would silently invalidate every other checkpoint's
 graphs, the way the original --force rebuild almost did (see
-.claude/EVAL_REPRODUCIBILITY_INVESTIGATION.md). Config.yaml itself is never
+EVAL_REPRODUCIBILITY_INVESTIGATION.md). Config.yaml itself is never
 touched either — true_radial is forced in-process, per worker, via a
 monkeypatched get_config().
 
