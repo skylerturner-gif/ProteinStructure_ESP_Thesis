@@ -17,7 +17,7 @@ vertex is violated by characterising its geometry:
 
 Usage:
     python scripts/diagnose_esp_artifacts.py --all
-    python scripts/diagnose_esp_artifacts.py --all --output outputs/esp_artifact_diagnosis.csv
+    python scripts/diagnose_esp_artifacts.py --all --output /home/student/thesis/outputs/esp_artifact_diagnosis.csv
 """
 
 from __future__ import annotations
@@ -128,7 +128,7 @@ def main() -> None:
     )
     add_filter_args(parser)
     parser.add_argument("--data-root", type=str, default=None)
-    parser.add_argument("--output", type=str, default="outputs/esp_artifact_diagnosis.csv")
+    parser.add_argument("--output", type=str, default="/home/student/thesis/outputs/esp_artifact_diagnosis.csv")
     args = parser.parse_args()
 
     data_root     = Path(args.data_root) if args.data_root else get_data_root()

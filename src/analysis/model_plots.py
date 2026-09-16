@@ -21,6 +21,11 @@ plot_sorted_predictions
 plot_delta_predictions
     Per-ESP-bin MAE-improvement bar chart comparing two checkpoint dirs.
 
+pooled_bucket_table
+    Bucket a single pooled vertex population's |error| by true-ESP value
+    into named ranges. Companion to range_delta_breakdown (which compares
+    two systems at the same points) for summarizing one population alone.
+
 Usage:
     from src.analysis.model_plots import plot_training_curves, plot_parity_hexbin, plot_sorted_predictions
     plot_training_curves(ckpt_dir, save_dir=Path("~/figures"), model_name="attention")
@@ -419,6 +424,49 @@ def range_delta_breakdown(
             "net_delta_kT_e":     float(bin_delta[mask].sum()),
             "mean_delta_kT_e":    float(bin_delta[mask].mean()),
             "pct_bins_favor_compared": float((bin_delta[mask] > 0).mean() * 100),
+        })
+    return pd.DataFrame(rows)
+
+
+def pooled_bucket_table(
+    true_esp: np.ndarray,
+    abs_error: np.ndarray,
+    ranges: tuple[tuple[float, float], ...] = (
+        (-15, -8), (-8, -2), (-2, 2), (2, 8), (8, 15),
+    ),
+) -> pd.DataFrame:
+    """Bucket ONE pooled vertex population by true-ESP value into named ranges.
+
+    Companion to range_delta_breakdown, which compares two systems at the
+    same points via a cross-matched delta; this instead summarizes one
+    population's own |error| distribution directly — no cross-matching, so
+    it also fits populations of different sizes (e.g. query nodes vs.
+    interpolated mesh vertices, which are disjoint and differently sized
+    per protein).
+
+    Args:
+        true_esp:  (N,) pooled true ESP values (kT/e) across all vertices
+                   in the population, already concatenated across proteins.
+        abs_error: (N,) matching |predicted − true| ESP values (kT/e).
+        ranges:    named true-ESP bucket boundaries, same default edges as
+                   range_delta_breakdown for visual/conceptual consistency.
+
+    Returns a DataFrame with one row per range: range label, vertex count,
+    mean |error|, median |error|. Vertices whose true ESP falls outside
+    every given range are dropped (ranges should be contiguous/covering if
+    that's not desired).
+    """
+    rows = []
+    for lo, hi in ranges:
+        mask = (true_esp >= lo) & (true_esp < hi)
+        if not mask.any():
+            continue
+        bucket_err = abs_error[mask]
+        rows.append({
+            "range":                f"[{lo}, {hi})",
+            "n_vertices":           int(mask.sum()),
+            "mean_abs_error_kT_e":   float(bucket_err.mean()),
+            "median_abs_error_kT_e": float(np.median(bucket_err)),
         })
     return pd.DataFrame(rows)
 

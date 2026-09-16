@@ -17,7 +17,7 @@ meaningful surface potentials from near-charge-singularity artifacts.
 Usage:
     python scripts/survey_mesh_atom_overlap.py --all --workers 8
     python scripts/survey_mesh_atom_overlap.py --all --workers 8 \\
-        --output outputs/mesh_atom_overlap_survey.csv
+        --output /home/student/thesis/outputs/mesh_atom_overlap_survey.csv
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def main() -> None:
     )
     add_filter_args(parser)
     parser.add_argument("--data-root", type=str, default=None)
-    parser.add_argument("--output", type=str, default="outputs/mesh_atom_overlap_survey.csv")
+    parser.add_argument("--output", type=str, default="/home/student/thesis/outputs/mesh_atom_overlap_survey.csv")
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 

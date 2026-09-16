@@ -13,7 +13,7 @@ Run in the `pyg_env` conda environment (needs PyTorch + PyTorch Geometric).
 
 Usage:
     conda activate pyg_env
-    python scripts/rebuild_graphs_for_ids.py --id-file outputs/esp_artifact_repaired_ids.txt
+    python scripts/rebuild_graphs_for_ids.py --id-file /home/student/thesis/outputs/esp_artifact_repaired_ids.txt
 """
 
 from __future__ import annotations

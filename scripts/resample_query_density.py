@@ -75,8 +75,16 @@ def _resample_one(
             verts, faces = esp_data["verts"], esp_data["faces"]
             ses_area = float(mesh_data["ses_area"])
 
-            n_query   = max(1, int(len(verts) * sample_frac))
-            query_idx = curvature_sampling(verts, faces, n_query, ses_area)
+            n_query = max(1, int(len(verts) * sample_frac))
+            if n_query >= len(verts):
+                # Every vertex is selected regardless of curvature order at this
+                # fraction — skip curvature_sampling's curvature computation and
+                # spatial-hash spacing pass entirely, it would just return
+                # sorted(all indices) anyway (confirmed: curvature_sampling's own
+                # k = min(k, n) clamp reduces to exactly this case).
+                query_idx = np.arange(len(verts), dtype=np.int64)
+            else:
+                query_idx = curvature_sampling(verts, faces, n_query, ses_area)
 
             np.savez_compressed(
                 dst.esp_path,

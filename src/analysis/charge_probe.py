@@ -26,7 +26,15 @@ __all__ = [
     "extract_atom_embeddings",
     "train_probe",
     "evaluate_probe",
+    "load_parse_charge_reference",
 ]
+
+# PDB2PQR's PARSE force-field dictionary, in the protein_esp conda env (this
+# codebase's PQR-generation environment — see CLAUDE.md's "PDB2PQR (PARSE
+# force field, pH 7.0)" pipeline stage).
+DEFAULT_PARSE_DAT_PATH = Path(
+    "/home/student/miniconda3/envs/protein_esp/lib/python3.10/site-packages/pdb2pqr/dat/PARSE.DAT"
+)
 
 
 class ChargeProbe(nn.Module):
@@ -116,6 +124,38 @@ def extract_atom_embeddings(
     return h.cpu()
 
 
+def _load_protein_embeddings(
+    protein_id: str,
+    model: nn.Module,
+    data_root: Path,
+    layer: str,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """
+    Load one protein's frozen-backbone atom embeddings + PQR charges.
+
+    Shared by train_probe and evaluate_probe so both extract embeddings the
+    same way and skip atom-count mismatches identically.
+
+    Returns (h_atom, charges), both CPU tensors, or None if the PQR is
+    missing or its atom count doesn't match the cached graph's atom count.
+    """
+    from src.analysis.embedding_analysis import _load_graph  # avoid circular import
+
+    paths = ProteinPaths(protein_id, data_root)
+    if not paths.pqr_path.exists():
+        return None
+
+    charges = read_pqr_charges(paths.pqr_path)
+    data    = _load_graph(protein_id, data_root)
+    h_atom  = extract_atom_embeddings(model, data, layer=layer, device=device)
+
+    if h_atom.shape[0] != len(charges):
+        return None
+
+    return h_atom, torch.tensor(charges, dtype=torch.float32)
+
+
 def train_probe(
     probe: ChargeProbe,
     model: nn.Module,
@@ -130,46 +170,43 @@ def train_probe(
     Train the probe MLP on partial-charge prediction with backbone frozen.
 
     Proteins where the PQR atom count does not match the graph are skipped.
+    Embeddings + charges are extracted from the frozen backbone ONCE up
+    front (not once per epoch — the backbone never changes, so re-loading
+    every protein's graph and rerunning the forward pass every epoch is
+    pure waste) and cached on CPU for the remaining epochs; each epoch just
+    moves the small cached tensors to `device` as needed.
+
     Returns the trained probe moved to CPU.
     """
-    from src.analysis.embedding_analysis import _load_graph  # avoid circular import
-
     if device is None:
         device = torch.device("cpu")
 
-    probe     = probe.to(device)
+    probe = probe.to(device)
+
+    cached: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for pid in protein_ids:
+        result = _load_protein_embeddings(pid, model, data_root, layer, device)
+        if result is not None:
+            cached.append(result)
+    print(f"  Precomputed embeddings for {len(cached)}/{len(protein_ids)} proteins "
+          f"(skipped: missing PQR or atom-count mismatch)")
+
     optimizer = torch.optim.Adam(probe.parameters(), lr=lr)
     loss_fn   = nn.MSELoss()
 
     for epoch in range(1, epochs + 1):
         probe.train()
         total_loss = 0.0
-        n_proteins = 0
 
-        for pid in protein_ids:
-            paths = ProteinPaths(pid, data_root)
-            if not paths.pqr_path.exists():
-                continue
-
-            charges = read_pqr_charges(paths.pqr_path)
-            data    = _load_graph(pid, data_root)
-            h_atom  = extract_atom_embeddings(model, data, layer=layer, device=device)
-
-            if h_atom.shape[0] != len(charges):
-                continue  # atom count mismatch between graph and PQR — skip
-
-            h_atom = h_atom.to(device)
-            y      = torch.tensor(charges, dtype=torch.float32, device=device)
-
+        for h_atom, y in cached:
+            h_atom, y = h_atom.to(device), y.to(device)
             optimizer.zero_grad()
             loss = loss_fn(probe(h_atom), y)
             loss.backward()
             optimizer.step()
-
             total_loss += loss.item()
-            n_proteins += 1
 
-        print(f"  Epoch {epoch:3d}/{epochs}  train MSE: {total_loss / max(n_proteins, 1):.4f}")
+        print(f"  Epoch {epoch:3d}/{epochs}  train MSE: {total_loss / max(len(cached), 1):.4f}")
 
     return probe.cpu()
 
@@ -189,8 +226,6 @@ def evaluate_probe(
         dict with "global" (rmse, mae, mean_r2, n_proteins, n_atoms) and
         "per_protein" ({protein_id: {rmse, mae, r2, n_atoms}}).
     """
-    from src.analysis.embedding_analysis import _load_graph
-
     if device is None:
         device = torch.device("cpu")
 
@@ -204,26 +239,18 @@ def evaluate_probe(
 
     with torch.no_grad():
         for pid in protein_ids:
-            paths = ProteinPaths(pid, data_root)
-            if not paths.pqr_path.exists():
+            result = _load_protein_embeddings(pid, model, data_root, layer, device)
+            if result is None:
                 continue
-
-            charges = read_pqr_charges(paths.pqr_path)
-            data    = _load_graph(pid, data_root)
-            h_atom  = extract_atom_embeddings(model, data, layer=layer, device=device)
-
-            if h_atom.shape[0] != len(charges):
-                continue
-
-            h_atom = h_atom.to(device)
-            y      = torch.tensor(charges, dtype=torch.float32, device=device)
-            pred   = probe(h_atom)
+            h_atom, y = result
+            h_atom, y = h_atom.to(device), y.to(device)
+            pred = probe(h_atom)
 
             sq_err  = ((pred - y) ** 2).sum().item()
             abs_err = (pred - y).abs().sum().item()
-            n       = len(charges)
+            n       = len(y)
 
-            corr = float(np.corrcoef(charges, pred.cpu().numpy())[0, 1]) if n > 1 else 0.0
+            corr = float(np.corrcoef(y.cpu().numpy(), pred.cpu().numpy())[0, 1]) if n > 1 else 0.0
 
             per_protein[pid] = {
                 "rmse":    float((sq_err / n) ** 0.5),
@@ -247,3 +274,33 @@ def evaluate_probe(
         },
         "per_protein": per_protein,
     }
+
+
+def load_parse_charge_reference(
+    parse_dat_path: Path = DEFAULT_PARSE_DAT_PATH,
+) -> dict[tuple[str, str], float]:
+    """
+    Parse PDB2PQR's PARSE force-field dictionary into a
+    {(resname, atomname): charge} lookup, protein residues only (skips the
+    5-field RNA rows).
+
+    For documentation/labeling use only — NOT a classification key. PDB2PQR
+    normalizes protonation-variant residue names (e.g. HID/HIE/HIP each get
+    PARSE-appropriate charges internally but are always written out as
+    "HIS" in the PQR), so a name-keyed lookup can't reliably recover which
+    tautomer's charge a given *observed* atom actually has. Classify atoms
+    by their own observed charge instead; use this table only to describe
+    what a given charge value typically corresponds to.
+    """
+    reference: dict[tuple[str, str], float] = {}
+    with open(parse_dat_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split("\t")
+            if len(fields) != 4:
+                continue  # skip RNA rows (5 fields) and anything malformed
+            resname, atomname, charge, _radius = fields
+            reference[(resname, atomname)] = float(charge)
+    return reference

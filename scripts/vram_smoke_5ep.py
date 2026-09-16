@@ -48,7 +48,7 @@ from src.training.loss import ESPLoss
 from src.utils.config import get_data_root
 
 CKPT_ROOT = Path("/home/student/thesis/checkpoints")
-LOG_DIR   = _ROOT / "outputs" / "vram_smoke"
+LOG_DIR   = Path("/home/student/thesis/outputs") / "vram_smoke"
 
 SMOKE_MODELS = [
     {"name": "attention_qq6",  "model": "attention", "bf16": False},
