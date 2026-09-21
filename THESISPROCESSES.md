@@ -200,6 +200,38 @@ This document records every methodological decision made in the pipeline — wha
 
 ---
 
+## Graph Storage — Slim Edge Attributes (2026-09-16)
+
+**Decision:** Cached graphs store one `edge_dist` float per edge (plus a `bond_order` column for bond edges) instead of the baked RBF expansion. Models expand to RBF features on-device at forward time (`src/data/rbf.py`'s `materialize_edge_attr`). This is now the default in `graph_builder.build_graph()` (`slim_edge_attr=True`) — every newly built graph, from any pipeline stage, comes out slim with no separate conversion step.
+
+**Why:** A training run restricted to large proteins (≥600 aa) was measured at ~3% GPU utilization with `/proc/pressure/io` reporting ~80% full stall — the job was disk-bound, not compute-bound. Inspecting a cached graph file showed `edge_attr` (the baked 16-wide Gaussian RBF expansion of a single scalar distance) was **78.8% of the file's bytes** for zero additional information: the expansion is a pure function `exp(-((d-centers)²)/σ²)` of the stored positions, exactly recoverable at ~1e-6 precision, far below bf16's own resolution. Storing the scalar and expanding on-device shrinks a graph file ~3.78× and cuts DataLoader IPC and host RAM pressure by the same factor. It does **not** reduce VRAM — the expanded tensor is identical, just produced on the GPU instead of shipped there.
+
+**Verification (not assumed — measured):**
+- Model outputs (fp32): max|Δ| ≈ 3×10⁻⁷ between slim and legacy graphs, single and batched. Under bf16 autocast (the real training path): max|Δ| ≈ 4×10⁻³, the same order as bf16's own quantization noise (legacy-vs-legacy repeat: ≈ 3.6×10⁻³) — below the precision floor of training itself.
+- Full-dataset champions (`attention_aa4_aq2_qq16`, `distance_aa8_aq2_qq24`), re-evaluated on the slim graphs with weights frozen, 848-protein test set: Δr = −0.0000025 and −0.0000236 respectively; per-protein max|Δr| = 0.0037, median ≈ 0.0002.
+- Ratio holds across protein size — measured 3.771×–3.778× on a 297-protein sample spanning 690–15,362 atoms; it's a structural consequence of `n_rbf=16`'s fixed edge_attr:edge_index byte ratio, not size-dependent.
+
+**Conversion tool:** `scripts/slim_graph_edge_attr.py` — converts an already-built legacy cache to slim without re-deriving from PQR/mesh/ESP (no bond-detection or kNN re-run). Defaults to a separate `--dest-root`, never modifies the source cache; `--in-place` exists but must be asked for by name. Full dataset conversion: 173.49 GB → 45.91 GB (3.78×, 127.58 GB saved).
+
+**Measured speedup (final — all 4 full-dataset champions/heads-ablation checkpoints migrated and retrained to completion, 2026-09-16 to 2026-09-18):**
+
+| Checkpoint | legacy graphs (mean s/epoch) | slim graphs (mean s/epoch) | speedup |
+|---|---|---|---|
+| `attention_aa4_aq2_qq16` | ~2,079 | 404 | 5.1× |
+| `distance_aa8_aq2_qq24` | ~1,963 | 648 | 3.0× |
+| `attention_heads2` | ~1,910 | 602 | 3.2× |
+| `attention_heads8` | ~1,998 | 430 | 4.6× |
+
+3–5× faster, not the ~2× first estimated from a single preliminary epoch. `heads2` and `distance_aa8_aq2_qq24` show wide per-epoch variance on the slim side (e.g. `heads2`: min 447 s, max 1,108 s) — consistent with this machine's shared-tenancy I/O contention, not a data or format artifact. All four full-dataset checkpoints' pre-slim `metrics.csv`/`test_metrics.json` are archived at `outputs/pre_slim_graph_baseline/`. **Note — see "Training — DataLoader Worker Configuration" above: that section's "~45 min/epoch... days not hours" full-dataset estimate predates this change and is now stale for any run on the slim graphs.**
+
+**Accuracy after a full retrain on slim graphs, not just frozen-weight re-eval:** all four checkpoints were retrained from scratch on the slim graphs at a uniform 75-epoch budget (see "Full-Dataset Champion Configuration" and "Attention Head Specialization" below for the corrected numbers) — differences from their legacy-graph counterparts are all within ±0.003 r, consistent with the frozen-weight equivalence test above. The graph format has no measurable effect on what the model learns, only on how fast it gets there.
+
+**Pre-slim baseline preserved for reference:** the original (legacy-graph, correct-precision) `metrics.csv`/`test_metrics.json` for all four `full_dataset/` checkpoints are archived at `outputs/pre_slim_graph_baseline/` before any slim rerun could touch them, specifically so the before/after speed comparison above has a durable source.
+
+**Legacy escape hatch:** `pipelines/06_build_graphs.py --no-slim-edge-attr` still bakes the old format, for reproducing pre-2026-09-16 byte-for-byte behavior. Not used by anything by default.
+
+---
+
 ## Model Selection — Architecture & Feature Configuration
 
 **Decision:** AttentionESPN with both optional features enabled: query geometry (`norm_curv`) and multi-aggregation (`multi`), referred to as the `both` configuration.
@@ -289,7 +321,32 @@ This document records every methodological decision made in the pipeline — wha
 
 **Test Pearson r / RMSE so far:** AA sweep — Attention baseline 0.8898/2.660, aa8 0.9022/2.416, aa12 0.9003/2.375; Distance baseline 0.8964/2.573, aa8 0.9035/2.425, aa12 0.9034/2.349. AQ sweep — Attention baseline 0.8898/2.660, aq8 0.8923/2.571 (aq12 pending); Distance baseline 0.8964/2.573, aq8 0.8963/2.565, aq12 0.8960/2.560 (essentially flat).
 
-**Early read (not yet a decision):** AA rounds are a real second lever, worth ~+0.01–0.014 r at aa8, with diminishing/mixed returns at aa12. AQ rounds look close to redundant/saturated even at the 4-round baseline. The conditional-combination step (testing AA+QQ or AQ+QQ together) is blocked pending these results. Despite the sweep being unfinished, the full-dataset champion models already adopted asymmetric AA rounds per architecture (Attention aa=4, Distance aa=8) — see "Full-Dataset Champion Configuration" below — consistent with this early read but not confirmed by a closed-out sweep.
+**Early read (not yet a decision):** AA rounds are a real second lever, worth ~+0.01–0.014 r at aa8, with diminishing/mixed returns at aa12. AQ rounds look close to redundant/saturated even at the 4-round baseline. The conditional-combination step (testing AA+QQ or AQ+QQ together) is blocked pending these results — though see "AQ+QQ Round Combination Sweep" immediately below: those 4 combo runs did happen (and are now precision-corrected), just not documented in this section or folded back into a closed-out Sweep E decision. Despite the sweep being unfinished, the full-dataset champion models already adopted asymmetric AA rounds per architecture (Attention aa=4, Distance aa=8) — see "Full-Dataset Champion Configuration" below — consistent with this early read but not confirmed by a closed-out sweep.
+
+---
+
+## Model Selection — AQ+QQ Round Combination Sweep — FP32 Bug Found and Fixed (2026-09-16–18)
+
+**Status:** The 4 combo checkpoints (below) are precision-corrected and complete. Whether they constitute a closed-out decision for Sweep E's "conditional-combination step" is still open — see the previous section.
+
+**Checkpoints:** `checkpoints/phase_e/{attention_aq2_qq16, attention_aq2_qq24, distance_aa8_aq2_qq16, distance_aa8_aq2_qq24}` — the 1,045-protein subset, testing AQ=2 combined with QQ=16/24 (the round-count winners from the single-axis sweeps, tried together). `attention_aq2_qq16` and `distance_aa8_aq2_qq24` are the two that went on to become the full-dataset champions (see "Full-Dataset Champion Configuration" below).
+
+**Bug found:** A routine checkpoint audit found these 4 checkpoints' `peak_vram_gb` far above every sibling `phase_a`–`h` checkpoint of comparable architecture — e.g. `attention_aq2_qq16` at 23.1 GB vs. the directly comparable `phase_d/attention_qq16` (same rounds minus the AQ=2 change, which should if anything *lower* memory) at 15.2 GB. Confirmed empirically, not just by inspection: rebuilding each exact architecture and running a real batch from the same dataset at both precisions reproduced the observed VRAM only under FP32 (e.g. `distance_aa8_aq2_qq24`: 34.79 GB observed vs. 33.73 GB FP32-predicted vs. 18.03 GB bf16-predicted). All 4 combo checkpoints had silently trained FP32 — launched by an untraceable ad-hoc script (only a log survives, `logs_adhoc/combo_sweep_queue.log`; no `.sh` file, no shell-history hit) that evidently never passed `--bf16`, unlike every other sweep in this project (`run_sweep.py` forwards `training.bf16` from every YAML; the two other ad-hoc launcher scripts pass `--bf16` explicitly). The full-dataset champions descended from 2 of these 4 were separately confirmed genuinely bf16 — this bug did not propagate downstream.
+
+**Root cause, more generally:** `pipelines/07_train.py`'s `--bf16` CLI flag was never wired into `config.yaml`'s injected argparse defaults, so any direct invocation that forgot to pass `--bf16` trained FP32 with no error, no warning, and near-identical (if slower, more VRAM-hungry) output. **Fixed at the source, not just patched for these 4 runs:** `bf16` is no longer a parameter at all on `Trainer`/`evaluate_test` — bfloat16 autocast is unconditional in every forward pass. `--bf16` remains accepted on the CLI (so old launch scripts don't break on an unrecognized argument) but is now a documented no-op.
+
+**Fix:** All 4 rerun from scratch — same subset manifest (`train: 836  val: 99  test: 110`, seed 42), same legacy (non-slim) graph format as every sibling checkpoint (comparability, not the new slim default), same 1,000,000-edge budget, DDP world_size=2, now genuinely bf16.
+
+**Corrected numbers:**
+
+| Checkpoint | FP32 VRAM → bf16 VRAM | FP32 s/epoch → bf16 s/epoch | FP32 test r → bf16 test r |
+|---|---|---|---|
+| `attention_aq2_qq16` | 23.6 → 12.6 GB | 79.3 → 47.8 | 0.9090 → 0.9090 |
+| `attention_aq2_qq24` | 28.5 → 15.3 GB | 95.7 → 54.4 | 0.9103 → 0.9086 |
+| `distance_aa8_aq2_qq16` | 31.8 → 17.1 GB | 110.4 → 74.2 | 0.9127 → 0.9142 |
+| `distance_aa8_aq2_qq24` | 35.3 → 19.0 GB | 126.5 → 80.6 | 0.9164 → 0.9139 |
+
+Roughly half the VRAM and ~35–40% faster per epoch, now consistent with every sibling checkpoint's bf16 footprint — this is what makes VRAM/speed usable again as a selection metric among these 4. Test accuracy barely moved (all Δr within ±0.0025) — the bug was a comparability problem, not a correctness one; whatever the FP32 numbers said about which combo wins on accuracy was probably still approximately right, but the VRAM/speed side of that decision was not, and now is. The original FP32 checkpoints are archived at `outputs/superseded_fp32_combo_runs/` rather than deleted.
 
 ---
 
@@ -345,19 +402,25 @@ This document records every methodological decision made in the pipeline — wha
 
 **Checkpoints:** `attention_aa4_aq2_qq16` (AttentionESPN, 4 bond/radial rounds, 2 AQ rounds, 16 QQ rounds) and `distance_aa8_aq2_qq24` (DistanceESPN, 8 bond/radial rounds, 2 AQ rounds, 24 QQ rounds), both `agg=multi`, both trained on the full ~8,461-protein dataset and evaluated on the shared 848-protein test split.
 
-**Dataset scale finding:** Holding this exact config fixed, full-dataset training beats the original 1,045-protein subset by a consistent margin for both architectures: Attention test r 0.9368 vs 0.9090 (Δ +0.0278), Distance 0.9386 vs 0.9164 (Δ +0.0222) — roughly 9–10% relative RMSE improvement either way. Epoch budgets weren't perfectly matched (full: 75–100 epochs; subset: 120) so the gap is a slight underestimate of pure scale effect if anything. Per-protein ranking correlation across the two test splits was attempted but only 13 proteins overlapped — too few to draw conclusions from. Scale helps by a similar magnitude regardless of architecture; neither model looks closer to saturating than the other.
+**Updated 2026-09-18 — retrained on slim graphs, uniform 75-epoch budget:** both checkpoints were migrated to the slim `edge_dist` graph format (see "Graph Storage — Slim Edge Attributes" above) and retrained from scratch at `epochs=75` for both architectures — previously 75 (Attention) vs. 100 (Distance), an epoch-budget mismatch that confounded the cosine LR schedule's `T_max` between them. New test r: Attention 0.9344 (was 0.9368 on legacy graphs, Δ −0.0024), Distance 0.9380 (was 0.9386, Δ −0.0006) — both within the noise band already established by the frozen-weight slim-vs-legacy equivalence check, confirming the graph format itself didn't move the result; the small shift is from the new training run, not the data format. The legacy-graph numbers remain archived at `outputs/pre_slim_graph_baseline/` for the speed comparison.
+
+**Dataset scale finding (updated with current numbers on both sides):** Holding this exact config fixed, full-dataset training beats the 1,045-protein subset by a consistent margin for both architectures: Attention test r 0.9344 vs 0.9090 (Δ +0.0254), Distance 0.9380 vs 0.9139 (Δ +0.0241) — roughly 8–9% relative RMSE improvement either way. The subset-side numbers are now bf16-corrected (see "AQ+QQ Round Combination Sweep" below) — previously these combo checkpoints were accidentally trained FP32; the correction moved Distance's subset r from 0.9164 to 0.9139, a small downward shift that widens the scale-effect gap slightly. Epoch budgets are still not matched between the two sides (full: 75; subset: 120) so the gap remains a slight underestimate of pure scale effect if anything. Per-protein ranking correlation across the two test splits was attempted but only 13 proteins overlapped — too few to draw conclusions from. Scale helps by a similar magnitude regardless of architecture; neither model looks closer to saturating than the other.
 
 ---
 
 ## Model Validation — Attention Head Specialization
 
-**Status:** Data collection substantially complete (§1–9 of 13), but the notebook's own stated "real test" (§11–12, emergent clustering + quantitative ARI/NMI agreement check) was never executed — those cells have no output in the saved notebook — and the final decision table (§13) is an unfilled "?" placeholder.
+**Status:** Complete, decision written (§13). §11–12 (emergent clustering + quantitative ARI/NMI agreement check — the notebook's own stated "real test") executed for the first time 2026-09-21, against the slim-graph-retrained checkpoints.
 
 **Notebook:** `notebooks/decisions/16_attention_head_analysis.ipynb`
 
-**Scope:** Not "which head count wins" (already settled elsewhere: n_heads=4 is the champion — test r 0.9327/0.9368/0.9347 for 2/4/8 heads respectively) but what each head specializes in chemically. Examines per-element/per-residue attention weight distributions, an electronegativity-weighted head-affinity score, and grouping by side-chain class and solvent exposure (from the project's own SES mesh data) across the 3 head-count checkpoints.
+**Scope:** Not "which head count wins" (previously cited as settled — n_heads=4 champion, test r 0.9327/0.9368/0.9347 for 2/4/8 heads on legacy graphs; no longer a clean win, see below) but what each head specializes in chemically. Examines per-element/per-residue attention weight distributions, an electronegativity-weighted head-affinity score, and grouping by side-chain class and solvent exposure (from the project's own SES mesh data) across the 3 head-count checkpoints.
 
-**Findings so far (not yet a written decision):** A specialization score (std of per-head element-attention) rises mildly with head count: 0.0230 (2 heads) → 0.0287 (4) → 0.0330 (8). Acidic residues (ASP/GLU) consistently draw elevated attention across all configs. Whether this constitutes genuine emergent "chemistry/physics/dynamics" clustering (the flagship framing in SUMMER_PLAN.md) is exactly what the un-run §11–12 quantitative validation was meant to establish.
+**Updated 2026-09-18 — retrained on slim graphs, uniform 75-epoch budget:** new test r is 0.9335/0.9344/0.9356 for 2/4/8 heads — all three checkpoints retrained from scratch (see "Graph Storage — Slim Edge Attributes" above). **This reopens the "n_heads=4 champion" claim**: heads8 now edges out heads4 by +0.0012, within the noise this project has generally treated as insignificant elsewhere (e.g. the Sweep C features-on/off margin), but it's no longer a clean win for n_heads=4 the way the old numbers read.
+
+**Findings (2026-09-21, §1–13 complete):** The specialization score does **not** rise monotonically with head count as previously reported (that finding predates re-running it against the new checkpoints and was wrong) — it peaks at n_heads=4: mean per-head element-α std is 0.0252 (2 heads) → **0.0628 (4)** → 0.0382 (8). Acidic residues (ASP/GLU) draw elevated attention across all configs, but basic residues (ARG/LYS) do not — the effect is charge-sign-specific, not "charged residues" in general. The quantitative §11–12 test (residues clustered from raw attention alone, zero chemistry vocabulary, compared via Adjusted Rand Index against known groupings): recovers **charge sign strongly at n_heads=4 specifically** (ARI 0.468 → **0.813** → 0.506 for 2/4/8 heads — a striking, non-monotonic peak), recovers the 5-way chemistry classification only weakly everywhere (ARI 0.12–0.26), and does **not** recover solvent exposure at all (ARI ≈ −0.089, worse than chance, identically across all three head counts) despite exposure clearly modulating attention *magnitude* at every head (§9) — a real dissociation: exposure shifts how much a residue is attended to, uniformly enough across heads that it doesn't survive the per-head z-scoring in the clustering step, so it never becomes part of the emergent multi-head *pattern*. n_heads=4's charge-sign result is not explained by test accuracy — it's now the middle of three very close results on that axis — so this is a genuine, separate finding about internal structure, not a restatement of the performance ranking.
+
+**Decision:** Attention has organized measurably around **charge sign** specifically — the chemical property most directly tied to ESP, what this model predicts — rather than around side-chain classification or solvent exposure in general, and does so most cleanly at a specific, non-extreme head count (4) for reasons this analysis doesn't explain. This is a real, specific, reportable finding, not the null result ("shallow correlations, no real taxonomy") the notebook's introduction floated as one possible outcome.
 
 ---
 

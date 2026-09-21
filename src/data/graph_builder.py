@@ -36,12 +36,24 @@ exists in the graph.
 
 Edge attributes
 ---------------
+Stored slim by default (slim_edge_attr=True): each edge store carries
+``edge_dist`` (1 float32 per edge), and bond additionally carries
+``bond_order``.  The model expands these to RBF features on-device via
+src/data/rbf.py's materialize_edge_attr, which is what the message-passing
+layers consume:
+
   bond  : [bond_order (1)] ++ [RBF distance (N_RBF)]  →  N_RBF+1 floats
   radial : [RBF distance (N_RBF)]
   aq   : [RBF distance (N_RBF)]
   qq   : [RBF distance (N_RBF)]
 
-RBF distance ranges (Å)
+Slim storage is ~3.9x smaller on disk (the RBF expansion was 78.8% of a graph
+file) and is the same information — see src/data/rbf.py for why. Pass
+slim_edge_attr=False to bake ``edge_attr`` in at build time, as graphs built
+before this split did; those older caches still load and train unchanged.
+
+RBF distance windows live in src/data/rbf.py's RBF_RANGES (single source of
+truth, shared with the forward-time expansion):
   bond  [0.9, 1.8]   radial [1.8, 8.0]   aq [0.0, 12.0]   qq [0.0, 8.0]
 
 Public API
@@ -63,6 +75,7 @@ from torch_geometric.data import HeteroData
 
 import MDAnalysis as mda
 
+from src.data.rbf import RBF_RANGES
 from src.utils.config import get_config
 from src.utils.helpers import get_logger
 from src.utils.paths import ProteinPaths
@@ -349,6 +362,7 @@ def build_graph(
     knn_aq: int = 32,
     knn_qq: int = 8,
     n_rbf: int = 16,
+    slim_edge_attr: bool = True,
 ) -> HeteroData:
     """
     Build a PyG HeteroData graph for one protein.
@@ -364,7 +378,13 @@ def build_graph(
         knn_radial:  k for radial supplementary atom-atom kNN (bond pairs excluded)
         knn_aq:      k for atom→query edges (query-centric)
         knn_qq:      k for query→query edges
-        n_rbf:       number of Gaussian RBF basis functions per edge
+        n_rbf:       number of Gaussian RBF basis functions per edge.  Only
+                     used when slim_edge_attr=False; slim graphs defer the
+                     expansion to the model, so n_rbf is chosen at train time.
+        slim_edge_attr: store one float32 distance per edge (plus bond_order
+                     for bond edges) instead of the baked RBF expansion,
+                     shrinking the cached file ~3.9x.  The model expands it
+                     on-device.  Pass False for the legacy baked format.
 
     Returns:
         HeteroData with node types 'atom' and 'query', and edge types
@@ -440,13 +460,7 @@ def build_graph(
     log.info("%s  building QQ edges (k=%d)", protein_id, knn_qq)
     qq_src, qq_dst, qq_dists = _knn_self(query_xyz, knn_qq)
 
-    # ── 8. RBF encode distances ───────────────────────────────────────────────
-    bond_rbf  = _rbf_encode(bond_dists,  n_rbf, d_min=0.9,  d_max=1.8)
-    radial_rbf = _rbf_encode(radial_dists, n_rbf, d_min=1.8,  d_max=8.0)
-    aq_rbf   = _rbf_encode(aq_dists,   n_rbf, d_min=0.0,  d_max=12.0)
-    qq_rbf   = _rbf_encode(qq_dists,   n_rbf, d_min=0.0,  d_max=8.0)
-
-    # ── 9. Assemble HeteroData ────────────────────────────────────────────────
+    # ── 8. Assemble HeteroData ────────────────────────────────────────────────
     data = HeteroData()
 
     # Atom nodes
@@ -473,35 +487,39 @@ def build_graph(
     curvature = _compute_mean_curvature(verts, faces)
     data["query"].curvature = torch.tensor(curvature[q_idx], dtype=torch.float)
 
-    # Covalent edges: [bond_order | rbf_dist]
-    bond_attr = np.concatenate([bond_orders[:, None], bond_rbf], axis=1)
-    data["atom", "bond", "atom"].edge_index = torch.tensor(
-        np.stack([bond_src, bond_dst]), dtype=torch.long
-    )
-    data["atom", "bond", "atom"].edge_attr = torch.tensor(bond_attr, dtype=torch.float)
+    # Edge stores.  Slim (default): one float32 distance per edge, expanded to
+    # RBF features on-device by src/data/rbf.py at forward time.  Legacy: bake
+    # the expansion in here, as graphs built before the split did.
+    def _attach_edges(edge_type, src, dst, dists, bond_orders=None):
+        relation = edge_type[1]
+        store = data[edge_type]
+        store.edge_index = torch.tensor(np.stack([src, dst]), dtype=torch.long)
 
-    # radial supplementary kNN edges
-    data["atom", "radial", "atom"].edge_index = torch.tensor(
-        np.stack([radial_src, radial_dst]), dtype=torch.long
-    )
-    data["atom", "radial", "atom"].edge_attr = torch.tensor(radial_rbf, dtype=torch.float)
+        if slim_edge_attr:
+            store.edge_dist = torch.tensor(dists, dtype=torch.float)
+            if bond_orders is not None:
+                store.bond_order = torch.tensor(bond_orders, dtype=torch.float)
+            return
 
-    # Atom→query edges
-    data["atom", "aq", "query"].edge_index = torch.tensor(
-        np.stack([aq_src, aq_dst]), dtype=torch.long
-    )
-    data["atom", "aq", "query"].edge_attr = torch.tensor(aq_rbf, dtype=torch.float)
+        d_min, d_max = RBF_RANGES[relation]
+        attr = _rbf_encode(dists, n_rbf, d_min=d_min, d_max=d_max)
+        if bond_orders is not None:
+            # Column order [bond_order | rbf] is load-bearing — trained
+            # checkpoints depend on it. rbf.materialize_edge_attr matches it.
+            attr = np.concatenate([bond_orders[:, None], attr], axis=1)
+        store.edge_attr = torch.tensor(attr, dtype=torch.float)
 
-    # Query→query edges
-    data["query", "qq", "query"].edge_index = torch.tensor(
-        np.stack([qq_src, qq_dst]), dtype=torch.long
-    )
-    data["query", "qq", "query"].edge_attr = torch.tensor(qq_rbf, dtype=torch.float)
+    _attach_edges(("atom", "bond", "atom"),    bond_src,   bond_dst,   bond_dists,
+                  bond_orders=bond_orders)
+    _attach_edges(("atom", "radial", "atom"),  radial_src, radial_dst, radial_dists)
+    _attach_edges(("atom", "aq", "query"),     aq_src,     aq_dst,     aq_dists)
+    _attach_edges(("query", "qq", "query"),    qq_src,     qq_dst,     qq_dists)
 
     # Metadata
-    data.protein_id   = protein_id
-    data.n_atoms      = n_atoms
-    data.n_query      = n_query
+    data.protein_id     = protein_id
+    data.n_atoms        = n_atoms
+    data.n_query        = n_query
+    data.edge_attr_slim = bool(slim_edge_attr)
     # query_normal/query_curvature are always attached now (see above) —
     # report them as always present regardless of what config.yaml said at
     # build time; other keys (e.g. true_radial) still reflect feat_cfg since

@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from src.data.rbf import materialize_edge_attr
 from src.models.egnn import _mlp
 from src.utils.paths import ProteinPaths
 
@@ -116,6 +117,13 @@ def extract_atom_embeddings(
     """
     if device is not None:
         data = data.to(device)
+
+    # Reaches into atom_encoder/atom_mp directly rather than calling
+    # model(data) — the full forward pass is what normally expands slim
+    # graphs' edge_dist to edge_attr (see src/data/rbf.py), so that
+    # expansion has to happen explicitly here too, or atom_mp's
+    # bond/radial MessageLayers crash on a graph with no edge_attr at all.
+    materialize_edge_attr(data, model.n_rbf)
 
     with torch.no_grad():
         h = model.atom_encoder(data)

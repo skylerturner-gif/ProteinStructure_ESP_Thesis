@@ -21,6 +21,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch_geometric.data import HeteroData
 
+from src.data.rbf import materialize_edge_attr
 from src.models.egnn import (
     AGG_MODES,
     AtomEncoder,
@@ -86,6 +87,7 @@ class DistanceESPN(nn.Module):
             raise ValueError(f"agg={agg!r} must be one of {AGG_MODES}")
         self.hidden_dim  = hidden_dim
         self.n_aq_rounds = n_aq_rounds
+        self.n_rbf       = n_rbf
 
         self.atom_encoder  = AtomEncoder(
             hidden_dim,
@@ -106,6 +108,12 @@ class DistanceESPN(nn.Module):
         )
 
     def forward(self, data: HeteroData) -> Tensor:
+        # Slim graphs store one distance per edge; expand to RBF features here,
+        # on-device. No-op for legacy graphs that baked edge_attr in at build
+        # time. Done at the top of forward (not in the trainer) so every
+        # consumer — sweeps, eval scripts, notebooks, probes — is covered.
+        materialize_edge_attr(data, self.n_rbf)
+
         # Stage 1 — atom encoder
         h_atom = self.atom_encoder(data)
         h_atom = self.atom_mp(h_atom, data)

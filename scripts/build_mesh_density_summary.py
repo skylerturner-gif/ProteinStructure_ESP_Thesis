@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 
-CKPT_ROOT = Path("/home/student/thesis/checkpoints/full_dataset")
+CKPT_ROOT = Path("/home/student/thesis/checkpoints/full_dataset_slim")  # migrated 2026-09-18, see THESISPROCESSES.md "Graph Storage — Slim Edge Attributes"
 DENSITY_EVAL_ROOT = Path("/home/student/thesis/model_eval/mesh_density_eval")
 
 MODELS = ["attention_aa4_aq2_qq16", "distance_aa8_aq2_qq24"]

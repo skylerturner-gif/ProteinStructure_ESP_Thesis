@@ -118,7 +118,6 @@ def main() -> None:
         model, loss_fn, eval_ds, device, extra_state,
         checkpoint_dir  = write_dir,
         predictions_dir = write_dir / "test_predictions",
-        bf16            = True,
     )
 
     g = results["global"]

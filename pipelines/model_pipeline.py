@@ -145,7 +145,7 @@ def main() -> None:
                         help="Stop training after this many epochs with no val loss improvement "
                              "(0 or omit to disable).")
     parser.add_argument("--bf16", action="store_true", default=False,
-                        help="Use bfloat16 mixed precision for training (A100+ recommended).")
+                        help=argparse.SUPPRESS)  # deprecated no-op — always on, see Trainer
     parser.add_argument("--use-ema", action="store_true", default=False,
                         help=argparse.SUPPRESS)  # deprecated no-op — always on, see Trainer
     parser.add_argument("--ema-decay", type=float, default=None,
@@ -235,10 +235,16 @@ def main() -> None:
             )
             if args.resume and len(model_types) == 1:
                 train_args += ["--resume", str(args.resume)]
-            # NOTE: --protein-weighted / --use-ema are no longer forwarded to
-            # 07_train.py — both are hardcoded on in ESPLoss/Trainer. The CLI
-            # flags above are kept accepted-but-inert so in-flight sweep
-            # processes built against the old interface don't break.
+            # NOTE: --protein-weighted / --use-ema / --bf16 are no longer
+            # forwarded to 07_train.py — all three are hardcoded on
+            # (ESPLoss/Trainer; bf16 in src/training/trainer.py's autocast
+            # calls). The CLI flags above are kept accepted-but-inert so
+            # in-flight sweep processes built against the old interface
+            # don't break. bf16 in particular used to be a real gap: this
+            # flag's own default was False, and 07_train.py's --bf16 was
+            # never wired into config.yaml's injected defaults either, so a
+            # direct invocation could silently train FP32 — see
+            # phase_e_combo_sweep_fp32 in project memory / THESISPROCESSES.md.
             accum = args.grad_accum_steps or train_cfg.get("grad_accum_steps", 1)
             if accum and accum > 1:
                 train_args += ["--grad-accum-steps", str(accum)]
@@ -246,8 +252,6 @@ def main() -> None:
             if es is None:
                 es = train_cfg.get("early_stopping_patience", 0)
             train_args += ["--early-stopping-patience", str(es or 0)]
-            if args.bf16:
-                train_args.append("--bf16")
             if args.ema_decay is not None:
                 train_args += ["--ema-decay", str(args.ema_decay)]
             seed = args.seed if args.seed is not None else train_cfg.get("seed")

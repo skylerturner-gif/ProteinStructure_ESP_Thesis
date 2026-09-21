@@ -52,7 +52,7 @@ from src.utils.helpers import get_pipeline_logger, timer
 from src.utils.io import update_metadata
 from src.utils.paths import ProteinPaths
 
-CKPT_ROOT = Path("/home/student/thesis/checkpoints/full_dataset")
+CKPT_ROOT = Path("/home/student/thesis/checkpoints/full_dataset_slim")
 MODELS = {
     "attention": CKPT_ROOT / "attention_aa4_aq2_qq16",
     "distance":  CKPT_ROOT / "distance_aa8_aq2_qq24",

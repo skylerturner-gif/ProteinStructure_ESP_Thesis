@@ -110,6 +110,10 @@ def _build_cmd(run: dict, filter_args: list[str], rebuild: bool, workers: int = 
         cmd += ["--grad-accum-steps", str(accum)]
     if "early_stopping_patience" in training:
         cmd += ["--early-stopping-patience", str(training["early_stopping_patience"])]
+    # training.bf16 in a sweep YAML is now a no-op — bf16 autocast is always
+    # on, hardcoded in src/training/trainer.py. Left here only so existing
+    # sweep YAMLs that set bf16: true don't need editing; --bf16 itself is
+    # accepted-but-inert in 07_train.py/model_pipeline.py.
     if training.get("bf16", False):
         cmd.append("--bf16")
     if "ema_decay" in training:

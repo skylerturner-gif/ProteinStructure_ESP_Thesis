@@ -62,7 +62,7 @@ from src.utils.config import get_config, get_data_root
 from src.utils.helpers import get_pipeline_logger
 from src.utils.paths import ProteinPaths
 
-CKPT_ROOT = Path("/home/student/thesis/checkpoints/full_dataset")
+CKPT_ROOT = Path("/home/student/thesis/checkpoints/full_dataset_slim")  # migrated 2026-09-18, see THESISPROCESSES.md "Graph Storage — Slim Edge Attributes"
 PROBE_MODELS = {
     "attention": CKPT_ROOT / "attention_aa4_aq2_qq16",
     "distance":  CKPT_ROOT / "distance_aa8_aq2_qq24",
