@@ -30,3 +30,4 @@ dependencies:
       - pyyaml
       - tqdm
       - scikit-learn
+      - umap-learn

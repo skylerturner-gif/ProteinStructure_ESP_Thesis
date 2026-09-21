@@ -30,7 +30,6 @@ ProteinStructure_ESP_Thesis/
 │   ├── processed/          # Placeholder
 │   └── datasets/           # Dataset index
 ├── docs/                   # Development workflow and GitHub setup guides
-├── outputs/                # Saved figures from decision notebooks
 ├── logs/                   # Placeholder log directory
 ├── tests/                  # Placeholder (no tests yet)
 ├── THESISPROCESSES.md      # All methodological decisions with rationale
@@ -177,9 +176,6 @@ All methodological decisions are documented in `notebooks/decisions/`. Each note
 | `11_query_layer_analysis` | QQ round ablation: long-range surface continuity | `pyg_env` |
 | `12_chemistry_layer_analysis` | Chemistry ablation: residue embedding, bond edges/count, radial edges | `pyg_env` |
 | `13_message_rounds_optimization` | Planned: message-passing round-count sweep (not yet designed) | `pyg_env` |
-| `14_embedding_analysis` | Atom-type embedding and attention-weight analysis | `pyg_env` |
-| `15_partial_charge_probe` | Frozen-backbone probe for per-atom partial charges | `pyg_env` |
-| `16_coulomb_baseline` | Vacuum Coulomb physics floor vs. RBF ceiling | `pyg_env` |
 
 See [THESISPROCESSES.md](THESISPROCESSES.md) for a summary of every decision made and the quantitative rationale.
 

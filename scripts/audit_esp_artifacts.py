@@ -21,7 +21,7 @@ Usage:
     python scripts/audit_esp_artifacts.py --all
     python scripts/audit_esp_artifacts.py --filter --min-plddt 70
     python scripts/audit_esp_artifacts.py --all --workers 8 \\
-        --output outputs/esp_artifact_audit.csv
+        --output /home/student/thesis/outputs/esp_artifact_audit.csv
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ def main() -> None:
     add_filter_args(parser)
     parser.add_argument("--data-root", type=str, default=None,
                          help="Override data_root from config.yaml.")
-    parser.add_argument("--output", type=str, default="outputs/esp_artifact_audit.csv",
+    parser.add_argument("--output", type=str, default="/home/student/thesis/outputs/esp_artifact_audit.csv",
                          help="Path to write the per-protein summary CSV.")
     parser.add_argument("--workers", type=int, default=8,
                          help="Parallel worker processes.")

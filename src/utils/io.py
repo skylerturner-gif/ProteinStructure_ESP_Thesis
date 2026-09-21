@@ -89,6 +89,23 @@ def update_metadata(protein_id: str, data: dict, data_root: Path) -> None:
         log.info("Updated metadata → %s  (fields: %s)", meta_path, list(data.keys()))
 
 
+def is_graph_stats_contaminated(meta: dict) -> bool:
+    """
+    True if a protein's graph-build stats were overwritten by the
+    resample_query_density.py / rebuild_graphs_for_ids.py symlink bug (see
+    scripts/repair_graph_stats.py): that experiment symlinked metadata.json
+    from an isolated dest-root back to the source data_root, so a later
+    graph rebuild against the dest-root wrote graph stats through the
+    symlink into the shared source metadata.
+
+    Detection signature: num_query_nodes (graph-build stage) disagrees with
+    n_query_nodes (ESP-sampling stage, authoritative) — confirmed
+    dataset-wide to coincide exactly with num_query_nodes == n_vertices
+    (the contaminating full-density graph's query count).
+    """
+    return meta.get("num_query_nodes") != meta.get("n_query_nodes")
+
+
 def load_metadata(protein_id: str, data_root: Path) -> dict:
     """
     Read and return the metadata dict for a protein.

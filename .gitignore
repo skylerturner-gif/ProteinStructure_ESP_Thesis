@@ -48,14 +48,16 @@ lib64/
 # ── Conda / virtual environments ──────────────────────────────────────────────
 .env
 .venv
+.venv-*
 env/
 venv/
 ENV/
 
 # ── Logs and outputs ──────────────────────────────────────────────────────────
+# outputs/ itself now lives outside the repo at /home/student/thesis/outputs/ —
+# this just guards against anything accidentally recreating a local copy.
 logs/
-outputs/figures/
-outputs/metrics/
+outputs/
 *.log
 
 # ── OS files ──────────────────────────────────────────────────────────────────

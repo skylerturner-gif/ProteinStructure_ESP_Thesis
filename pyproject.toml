@@ -7,6 +7,44 @@ name = "ProteinStructure_ESP_Thesis"
 version = "0.1.0"
 description = "Protein electrostatic surface potential prediction using EGNN"
 requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "pandas",
+    "biopython",
+    "mdanalysis",
+    "pyvista",
+    "vtk",
+    "griddataformats",
+    "mmtf-python",
+    "mrcfile",
+    "scooby",
+    "filelock",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+data-gen = [
+    "pillow",
+]
+model = [
+    "torch",
+    "torchvision",
+    "torch_geometric",
+    "tqdm",
+    "scikit-learn",
+    "umap-learn",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [tool.setuptools.packages.find]
 where = ["."]

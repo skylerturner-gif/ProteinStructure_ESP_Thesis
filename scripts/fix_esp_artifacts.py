@@ -22,12 +22,12 @@ whose flagged vertex was also a query node is now stale.
 
 Usage:
     conda activate protein_esp
-    python scripts/fix_esp_artifacts.py --audit-csv outputs/esp_artifact_audit.csv
-    python scripts/fix_esp_artifacts.py --audit-csv outputs/esp_artifact_audit.csv \\
+    python scripts/fix_esp_artifacts.py --audit-csv /home/student/thesis/outputs/esp_artifact_audit.csv
+    python scripts/fix_esp_artifacts.py --audit-csv /home/student/thesis/outputs/esp_artifact_audit.csv \\
         --workers 4 --ram-limit-gb 20
 
 Writes:
-    outputs/esp_artifact_repaired_ids.txt — protein IDs successfully repaired,
+    /home/student/thesis/outputs/esp_artifact_repaired_ids.txt — protein IDs successfully repaired,
         for scripts/rebuild_graphs_for_ids.py to pick up in pyg_env.
 """
 
@@ -79,12 +79,12 @@ def main() -> None:
         description="Re-run APBS + fixed ESP sampling for proteins flagged by "
                      "scripts/audit_esp_artifacts.py."
     )
-    parser.add_argument("--audit-csv", type=str, default="outputs/esp_artifact_audit.csv",
+    parser.add_argument("--audit-csv", type=str, default="/home/student/thesis/outputs/esp_artifact_audit.csv",
                          help="Per-protein CSV from audit_esp_artifacts.py.")
     parser.add_argument("--data-root", type=str, default=None,
                          help="Override data_root from config.yaml.")
     parser.add_argument("--output-ids", type=str,
-                         default="outputs/esp_artifact_repaired_ids.txt",
+                         default="/home/student/thesis/outputs/esp_artifact_repaired_ids.txt",
                          help="Where to write the list of successfully repaired IDs "
                               "(input for rebuild_graphs_for_ids.py in pyg_env).")
     parser.add_argument("--workers", type=int, default=4,

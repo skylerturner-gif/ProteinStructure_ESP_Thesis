@@ -77,8 +77,8 @@ class Trainer:
         early_stopping_patience: int = 0,
         extra_state: dict[str, Any] | None = None,
         rank: int = 0,
-        bf16: bool = False,
         ema_decay: float = 0.999,
+        val_raw: bool = False,
     ) -> None:
         self.model          = model.to(device)
         self.optimizer      = optimizer
@@ -92,8 +92,18 @@ class Trainer:
         self.extra_state             = extra_state or {}
         self.rank                    = rank
         self.is_main                 = (rank == 0)
-        self.bf16                    = bf16
         self.ema_decay               = ema_decay
+        self.val_raw                 = val_raw
+        # bf16 autocast is always on, not a constructor argument — see the
+        # train_epoch/val_epoch autocast blocks below. This used to be a
+        # `bf16: bool` param threaded through pipelines/07_train.py's --bf16
+        # flag, but that flag was never wired into config.yaml's injected
+        # defaults, so a direct `python pipelines/07_train.py ...` invocation
+        # (no explicit --bf16) silently trained in FP32 while every sweep
+        # script assumed bf16 — discovered 2026-09-16 (see
+        # THESISPROCESSES.md / phase_e_combo_sweep_fp32 in project memory).
+        # Removing the parameter removes the class of bug, not just one
+        # instance of it: there is no longer an argument to get wrong.
 
         self.best_val_loss  = float("inf")
         self._epochs_no_improve = 0
@@ -128,7 +138,7 @@ class Trainer:
         self.optimizer.zero_grad()
         for step_idx, data in enumerate(loader):
             data = data.to(self.device, non_blocking=True)
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.bf16):
+            with torch.autocast("cuda", dtype=torch.bfloat16):
                 pred   = self.model(data)
                 target = data["query"].y
                 batch  = data["query"].batch
@@ -175,7 +185,7 @@ class Trainer:
         with torch.no_grad():
             for data in loader:
                 data = data.to(self.device, non_blocking=True)
-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.bf16):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
                     pred = self.model(data)
                 pred   = pred.float()
                 target = data["query"].y
@@ -241,11 +251,17 @@ class Trainer:
             t0      = time.perf_counter()
             train_m = self.train_epoch(train_loader)
 
-            # Raw (non-EMA) validation, on the weights train_epoch just left
-            # in place — logged alongside the EMA validation below so the two
-            # can be compared directly (metrics.csv val_*_raw columns).
-            # Checkpoint selection still uses the EMA val_loss only.
-            val_m_raw = self.val_epoch(val_loader)
+            # Raw (non-EMA) validation, on the weights train_epoch just left in
+            # place, logged as the metrics.csv val_*_raw columns. This is a
+            # SECOND full pass over val_loader and is off by default: it only
+            # ever fed the raw-vs-EMA comparison in
+            # notebooks/decisions/09_ema_justification.ipynb, which is settled.
+            # Checkpoint selection has always used the EMA val_loss alone, so
+            # skipping it changes no training decision — it just drops a third
+            # of the per-epoch validation reads (on the large-protein tier that
+            # was 202 graphs, ~7.8 GB, read twice every epoch). Pass
+            # --val-raw / val_raw=True to restore it.
+            val_m_raw = self.val_epoch(val_loader) if self.val_raw else None
 
             if self._ema_state is not None:
                 raw = self.model.module if hasattr(self.model, "module") else self.model
@@ -253,6 +269,11 @@ class Trainer:
                 raw.load_state_dict({k: v.to(raw_state[k].dtype) for k, v in self._ema_state.items()})
                 val_m = self.val_epoch(val_loader)
                 raw.load_state_dict(raw_state)
+            elif val_m_raw is not None:
+                # EMA disabled: the raw pass above already measured exactly
+                # these weights, so reuse it instead of validating twice (the
+                # old code ran two identical passes in this branch).
+                val_m = val_m_raw
             else:
                 val_m = self.val_epoch(val_loader)
             elapsed = time.perf_counter() - t0
@@ -282,9 +303,14 @@ class Trainer:
                 self.history["val_loss"].append(val_m["loss"])
                 self.history["val_rmse"].append(val_m["rmse"])
                 self.history["val_pearson_r"].append(val_m["pearson_r"])
-                self.history["val_loss_raw"].append(val_m_raw["loss"])
-                self.history["val_rmse_raw"].append(val_m_raw["rmse"])
-                self.history["val_pearson_r_raw"].append(val_m_raw["pearson_r"])
+                # None when the raw pass is skipped; csv writes it as an empty
+                # field, so the metrics.csv schema stays stable for the
+                # notebooks that read these columns (they read as NaN).
+                self.history["val_loss_raw"].append(val_m_raw["loss"] if val_m_raw else None)
+                self.history["val_rmse_raw"].append(val_m_raw["rmse"] if val_m_raw else None)
+                self.history["val_pearson_r_raw"].append(
+                    val_m_raw["pearson_r"] if val_m_raw else None
+                )
                 self.history["lr"].append(current_lr)
                 self.history["peak_vram_gb"].append(peak_gb)
                 self.history["epoch_time_s"].append(round(elapsed, 1))
@@ -409,7 +435,6 @@ def evaluate_test(
     *,
     checkpoint_dir: Path,
     predictions_dir: Path | None = None,
-    bf16: bool = False,
 ) -> dict:
     """
     Run inference on a test dataset, compute per-protein metrics, and
@@ -471,7 +496,7 @@ def evaluate_test(
     # throwaway pass on the first batch before the timed loop starts.
     if device.type == "cuda" and len(test_ds) > 0:
         warmup_data = next(iter(loader)).to(device)
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             model(warmup_data)
         torch.cuda.synchronize(device)
 
@@ -485,7 +510,7 @@ def evaluate_test(
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             t0 = time.perf_counter()
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=bf16):
+            with torch.autocast("cuda", dtype=torch.bfloat16):
                 pred = model(data)
             if device.type == "cuda":
                 torch.cuda.synchronize(device)

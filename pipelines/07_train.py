@@ -154,14 +154,31 @@ def main() -> None:
     parser.add_argument("--early-stopping-patience", type=int, default=0,
                         help="Stop training if val loss does not improve for this many epochs "
                              "(0 = disabled).")
-    parser.add_argument("--bf16", action="store_true", default=False,
-                        help="Use bfloat16 mixed precision (forward pass only; "
-                             "optimizer stays FP32). Requires A100 or newer.")
+    # bf16 is always on now — hardcoded in src/training/trainer.py, not a
+    # constructor argument, after a direct 07_train.py invocation was found
+    # to silently train FP32 (--bf16 was never wired into config.yaml's
+    # injected defaults, so omitting the flag omitted bf16 too). --bf16 is
+    # kept accepted-but-inert, like --protein-weighted/--use-ema below, so
+    # in-flight sweep processes and launch scripts built against the old
+    # interface (they all pass --bf16 explicitly) don't break on an
+    # unrecognized argument.
+    parser.add_argument("--bf16", action="store_true", default=True,
+                        help="No-op — bf16 autocast is always on (see src/training/"
+                             "trainer.py). Kept only so existing launch scripts that "
+                             "pass --bf16 don't fail with an unrecognized argument.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Global RNG seed for weight initialisation reproducibility.")
     parser.add_argument("--ema-decay", type=float, default=0.999,
                         help="EMA decay factor for the always-on weight shadow used by "
                              "val/best_model.pt (default 0.999).")
+    parser.add_argument("--val-raw", action="store_true", default=False,
+                        help="Also validate with raw (non-EMA) weights each epoch, "
+                             "logged as the metrics.csv val_*_raw columns. Off by "
+                             "default because it is a second full pass over the "
+                             "validation set and affects no training decision — "
+                             "checkpoint selection uses the EMA val_loss only. Enable "
+                             "to reproduce the raw-vs-EMA comparison in "
+                             "notebooks/decisions/09_ema_justification.ipynb.")
 
     # ── I/O ───────────────────────────────────────────────────────────────────
     parser.add_argument(
@@ -407,8 +424,8 @@ def main() -> None:
         grad_accum_steps         = args.grad_accum_steps,
         early_stopping_patience  = args.early_stopping_patience,
         rank                     = rank,
-        bf16                     = args.bf16,
         ema_decay                = args.ema_decay,
+        val_raw                  = args.val_raw,
         extra_state    = {
             "model_name":   args.model,
             "esp_mean":     esp_mean,
@@ -454,7 +471,6 @@ def main() -> None:
                 raw_model, loss_fn, test_ds, device, trainer.extra_state,
                 checkpoint_dir  = ckpt_dir,
                 predictions_dir = pred_dir,
-                bf16            = args.bf16,
             )
 
             # Inject wall-clock training time into the global metrics and re-save.
