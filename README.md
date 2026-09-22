@@ -1,6 +1,8 @@
 # Protein ESP Surface Prediction via Geometric Deep Learning
 
-Thesis project investigating whether a heterogeneous graph neural network can learn to predict protein electrostatic potential (ESP) on the solvent-excluded surface from AlphaFold-predicted atomic structures. The model (AttentionESPN) operates on a heterogeneous graph of atom nodes and curvature-sampled surface query nodes, trained to approximate ESP values computed by PDB2PQR + APBS.
+Thesis project investigating whether heterogeneous graph neural networks can learn geometry-conditioned approximations of protein electrostatic potential (ESP) fields on the solvent-excluded surface, from AlphaFold-predicted atomic structures alone. Two architectures are trained and compared — **AttentionESPN** (multi-head cross-attention atom→query message passing) and **DistanceESPN** (RBF-only, mean-aggregation) — against three non-GNN baselines, on a heterogeneous graph of atom nodes and curvature-sampled surface query nodes, trained to approximate ESP values computed by PDB2PQR + APBS.
+
+> **Note for reviewers:** protein data, ESP grids, mesh files, and model checkpoints live outside this repository (too large for git). Decision notebooks include all outputs as saved cell results and document methodology even though they can't be re-executed without the external data.
 
 ---
 
@@ -9,33 +11,34 @@ Thesis project investigating whether a heterogeneous graph neural network can le
 ```
 ProteinStructure_ESP_Thesis/
 ├── src/
-│   ├── structure/          # AlphaFold API download
+│   ├── structure/          # AlphaFold API download (af_api.py)
 │   ├── electrostatics/     # PDB2PQR and APBS wrappers
-│   ├── surface/            # SES mesh generation (MSMS) and ESP sampling
-│   ├── data/               # Dataset, graph builder, sampler, transforms
-│   ├── models/             # AttentionESPN, DistanceESPN, shared EGNN blocks
-│   ├── training/           # Trainer loop and loss functions
-│   ├── analysis/           # Metrics, embedding analysis, charge probe, visualization
-│   └── utils/              # Logging, I/O, config, paths, filtering, parallelism
-├── pipelines/              # Stage-by-stage and end-to-end pipeline scripts
-├── scripts/                # Analysis and visualization utilities
-├── sweeps/                 # WandB sweep config YAMLs (ablation studies)
+│   ├── surface/             # SES mesh generation (MSMS) and ESP sampling
+│   ├── data/                # Dataset, graph builder, sampler, RBF expansion, transforms
+│   ├── models/               # AttentionESPN, DistanceESPN, shared EGNN building blocks
+│   ├── training/              # Trainer loop and ESP loss function
+│   ├── analysis/               # Metrics, embedding/attention analysis, charge probe, visualization
+│   ├── baseline_models/         # Non-GNN reference points: Coulomb, 3D CNN, Surface DGCNN
+│   └── utils/                    # Logging, I/O, config, paths, filtering, parallelism
+├── pipelines/               # Stage-by-stage (01-07) and end-to-end pipeline entry points
+├── scripts/                 # Analysis, evaluation, and one-off audit/repair utilities
+├── sweeps/                  # WandB-style sweep config YAMLs (ablation studies; gitignored)
 ├── notebooks/
-│   ├── decisions/          # 10 decision notebooks (01–10)
-│   └── *.ipynb             # Exploratory / pipeline validation notebooks
-├── configs/                # Experiment config files
+│   ├── decisions/           # 16 sequential decision notebooks — every methodological choice
+│   └── *.ipynb              # Post-training analysis notebooks (error, embeddings, baselines, ...)
+├── configs/                 # (placeholder — experiment configs currently live in sweeps/)
 ├── data/
-│   ├── raw/                # Benchmark protein IDs (3 proteins, git-tracked)
-│   ├── interim/            # Placeholder
-│   ├── processed/          # Placeholder
-│   └── datasets/           # Dataset index
-├── docs/                   # Development workflow and GitHub setup guides
-├── logs/                   # Placeholder log directory
-├── tests/                  # Placeholder (no tests yet)
-├── THESISPROCESSES.md      # All methodological decisions with rationale
+│   ├── datasets/            # Dataset index, TSVs, DATA_ORIGINS.md
+│   ├── interim/, processed/ # Placeholders
+│   └── ablation_subset_ids.txt
+├── docs/                    # Development workflow, GitHub setup, testing guide
+├── tests/                   # Placeholder — no test suite yet (see docs/testing_guide.md)
+├── THESISPROCESSES.md       # Every methodological decision, with rationale — start here
+├── SUMMER_PLAN.md            # Tiered research roadmap with DONE/IN PROGRESS status
+├── EVAL_REPRODUCIBILITY_INVESTIGATION.md  # One open, unresolved metrics-reproducibility gap
 ├── config.template.yaml
-├── environment.yml         # protein_esp: pipeline stages 1–5
-├── pyg_environment.yml     # pyg_env: graph construction and modeling
+├── environment.yml          # protein_esp: pipeline stages 1-5
+├── pyg_environment.yml      # pyg_env: graph construction and modeling (stages 6-7)
 └── pyproject.toml
 ```
 
@@ -43,141 +46,113 @@ ProteinStructure_ESP_Thesis/
 
 ## Setup
 
-> **Note for reviewers:** Due to large file sizes (protein data, ESP grids, mesh files, and model checkpoints), the data required to run the Jupyter notebooks is not included in this repository. The notebooks document methodological decisions and include all outputs as saved cell results, but cannot be re-executed without the external data files.
-
-This project uses **two separate conda environments** due to PyTorch Geometric dependency conflicts with the mesh-generation toolchain:
+This project uses **two separate conda environments**, because PyTorch Geometric's dependencies conflict with the mesh-generation toolchain:
 
 | Environment | Use | File |
 |-------------|-----|------|
-| `protein_esp` | Pipeline stages 1–5: downloading structures, ESP computation, mesh generation, ESP sampling | `environment.yml` |
-| `pyg_env` | Modeling stages: graph construction, EGNN training, feature analysis notebooks | `pyg_environment.yml` |
+| `protein_esp` | Pipeline stages 1-5: downloading structures, ESP computation, mesh generation, ESP sampling | `environment.yml` |
+| `pyg_env` | Stages 6-7: graph construction, model training, all `pyg_env`-tagged analysis notebooks/scripts | `pyg_environment.yml` |
 
 ```bash
-# Mesh generation and ESP pipeline
+# Stages 1-5
 conda env create -f environment.yml
 conda activate protein_esp
 pip install -e .
 
-# Modeling and graph neural network work
+# Stages 6-7
 conda env create -f pyg_environment.yml
 conda activate pyg_env
 pip install -e .
 
-# Copy and edit machine-specific config
+# Machine-specific config — required before running anything
 cp config.template.yaml config.yaml
+# then edit paths.data_root, paths.log_file, executables.{pdb2pqr,apbs,msms}
 ```
 
-`config.yaml` is git-ignored. All sections must be filled before running anything.
-
-### Config keys (`config.yaml`)
-
-```yaml
-paths:
-  data_root: /path/to/external/data       # root for all per-protein output
-  log_file:  /path/to/logs/pipeline.log   # pipeline-level log file
-
-executables:
-  pdb2pqr: pdb2pqr      # full path if not on PATH
-  apbs:    apbs
-  msms:    msms
-
-electrostatics:
-  forcefield: PARSE     # PARSE, AMBER, CHARMM, etc.
-  ph_method:  propka    # propka or pdb2pka
-  ph_value:   7.0
-
-surface:
-  msms_density:  3.0    # vertices per Å²
-  probe_radius:  1.4    # Å (water probe)
-
-esp_mapping:
-  normal_offset: 0.5    # Å outward offset before ESP lookup
-  subsample_n:   3      # keep every Nth vertex as known for Laplacian
-
-logging:
-  level: INFO           # DEBUG, INFO, WARNING, ERROR
-```
+`config.yaml` is git-ignored. See `config.template.yaml` for every key (paths, executables, electrostatics/surface/esp_mapping parameters, default model architecture, default training hyperparameters) with inline documentation. `pipelines/07_train.py` injects `config.yaml`'s `model:`/`training:` sections as argparse defaults — CLI flags still override them.
 
 ---
 
 ## Running the Pipeline
 
-### Full end-to-end
-
 ```bash
-python pipelines/full_pipeline.py --id-file data/test_ids.txt
+# Full end-to-end (handles conda env switching internally)
+python pipelines/full_pipeline.py --id-file data/your_ids.txt
+
+# Data generation only — stages 1-5, protein_esp env
+python pipelines/data_gen_pipeline.py --id-file data/your_ids.txt --workers 4
+
+# Modeling only — stages 6-7, pyg_env
+python pipelines/model_pipeline.py --id-file data/your_ids.txt
+
+# Individual stages
+python pipelines/01_download_structures.py --id-file data/your_ids.txt
+python pipelines/02_run_esp_calculations.py --filter --min-sequence-length 100
+python pipelines/03_generate_surface.py --all
+python pipelines/04_sample_esp.py --filter --min-plddt 70
+python pipelines/05_evaluate_esp.py --all
+python pipelines/06_build_graphs.py --all
+python pipelines/07_train.py --model attention --epochs 120 --bf16
+
+# WandB hyperparameter sweeps
+python pipelines/run_sweep.py --sweep sweeps/phase_a_loss_weight.yaml
 ```
 
-Runs all six stages sequentially for each UniProt ID in the file.
-
-### Individual stages
-
-```bash
-# 1. Download AlphaFold structures
-python scripts/01_download_structure.py --id-file data/test_ids.txt
-
-# 2. Assign charges/radii and compute ESP grid
-python scripts/02_run_esp_calculations.py --all
-python scripts/02_run_esp_calculations.py --filter --min-sequence-length 100
-
-# 3. Generate SES meshes
-python scripts/03_generate_surface.py --all
-python scripts/03_generate_surface.py --filter --min-plddt 70
-
-# 4. Sample ESP onto surface meshes
-python scripts/04_sample_esp.py --all
-python scripts/04_sample_esp.py --filter --min-plddt 70 --min-surface-area 5000
-
-# 5. Evaluate predictions
-python scripts/05_evaluate.py --all
-python scripts/05_evaluate.py --all --force   # recompute even if metrics exist
-
-# 6. Visualise a single protein
-python scripts/06_visualize.py AF-Q16613-F1
-python scripts/06_visualize.py AF-Q16613-F1 --clim -10 10
-```
-
-### Protein selection flags (scripts 02–05)
+### Protein selection flags (stages 02-06)
 
 | Flag | Type | Description |
-|------|------|-------------|
-| `--all` | — | Select all proteins that have a metadata JSON |
+|------|------|--------------|
+| `--all` | — | Select every protein with a metadata JSON |
 | `--filter` | — | Select proteins matching the criteria below |
-| `--min-sequence-length` | int | Minimum amino acid count |
-| `--max-sequence-length` | int | Maximum amino acid count |
-| `--min-plddt` | float | Minimum mean pLDDT score |
-| `--max-plddt` | float | Maximum mean pLDDT score |
-| `--min-surface-area` | float | Minimum SES area (Å²) |
-| `--max-surface-area` | float | Maximum SES area (Å²) |
+| `--min-sequence-length` / `--max-sequence-length` | int | Amino acid count |
+| `--min-plddt` / `--max-plddt` | float | Mean pLDDT score |
+| `--min-surface-area` / `--max-surface-area` | float | SES area (Å²) |
 
-`--all` and `--filter` are mutually exclusive and one is required.
+`--all` and `--filter` are mutually exclusive; one is required.
 
 ---
 
 ## Decision Notebooks
 
-All methodological decisions are documented in `notebooks/decisions/`. Each notebook records what was tested, what alternatives were considered, and the rationale for the chosen approach. Results are captured as saved cell outputs.
+Every methodological decision is documented in `notebooks/decisions/`, in the order it was made — what was tested, what alternatives were considered, and the quantitative rationale. Full narrative + current status of each: **[THESISPROCESSES.md](THESISPROCESSES.md)**.
 
-> **Notebooks 01–04** require `protein_esp` environment (mesh/ESP data).
-> **Notebooks 05–16** require `pyg_env` environment (graph construction, model training).
+| # | Notebook | Decision | Env |
+|---|----------|----------|-----|
+| 01 | `normal_offset_strategy` | ESP sampling offset from the SES surface | `protein_esp` |
+| 02 | `ESP_sampling_method_strategy` | Trilinear interpolation vs. nearest-neighbour vs. Laplacian | `protein_esp` |
+| 03 | `vertex_sampling_strategy` | Curvature-weighted vs. Poisson-disk vertex subsampling | `protein_esp` |
+| 04 | `interpolation_strategy` | Multiquadric RBF full-mesh reconstruction | `protein_esp` |
+| 05 | `graph_viability` | Heterogeneous graph definition: node/edge types, VRAM, timing | `pyg_env` |
+| 06 | `model_exploration` | Dynamic batching strategy, per-size-class safe batch sizes | `pyg_env` |
+| 07 | `loss_function_sweep` | Sweep A — Pearson-weighted loss, winner `pearson_weight=0.5` | `pyg_env` |
+| 08 | `message_aggregation_sweep` | Sweep B — MessageLayer aggregation (mean/sum/max/multi) | `pyg_env` |
+| 09 | `ema_justification` | EMA weight averaging kept, 120-epoch budget confirmed sufficient | `pyg_env` |
+| 10 | `chemistry_layer_ablations` | Sweep F — residue/bond/radial/chemistry ablation ladder | `pyg_env` |
+| 11 | `query_features_ablation` | Sweep C — query geometry features re-tested (kept off) | `pyg_env` |
+| 12 | `invariance_analysis` | SE(3) rotation/translation robustness | `pyg_env` |
+| 13 | `query_rounds_sweep` | Sweep D — QQ round count, full 0→32 sweep | `pyg_env` |
+| 14 | `structure_rounds_sweep` | Sweep E — AA/AQ round count (in progress) | `pyg_env` |
+| 15 | `full_vs_subset_comparison` | Full-dataset champion configuration | `pyg_env` |
+| 16 | `attention_head_analysis` | Attention head count + chemical specialization | `pyg_env` |
 
-| Notebook | Topic | Environment |
-|----------|-------|-------------|
-| `01_normal_offset_strategy` | ESP sampling offset from SES surface | `protein_esp` |
-| `02_ESP_sampling_method_strategy` | Interpolation vs. nearest-neighbour vs. Laplacian | `protein_esp` |
-| `03_vertex_sampling_strategy` | Curvature-weighted vs. Poisson-disk vertex subsampling | `protein_esp` |
-| `04_interpolation_strategy` | RBF reconstruction after sparse subsampling | `protein_esp` |
-| `05_graph_viability` | Heterogeneous graph construction: edge types, VRAM, timing | `pyg_env` |
-| `06_model_exploration` | Model architecture variants, dynamic batching, safe batch sizes | `pyg_env` |
-| `07_message_passing_analysis` | Staged ablation Phase 1: message-passing aggregation (mean/sum/max/multi) | `pyg_env` |
-| `08_query_node_features` | Staged ablation Phase 2: query geometry features (curvature, normal) | `pyg_env` |
-| `09_equivariance_reliance` | Evaluation only: SO(3) rotation/translation robustness of Phase 1+2 winners | `pyg_env` |
-| `10_batching_analysis` | Staged ablation Phase 3/4: loss weighting and gradient accumulation | `pyg_env` |
-| `11_query_layer_analysis` | QQ round ablation: long-range surface continuity | `pyg_env` |
-| `12_chemistry_layer_analysis` | Chemistry ablation: residue embedding, bond edges/count, radial edges | `pyg_env` |
-| `13_message_rounds_optimization` | Planned: message-passing round-count sweep (not yet designed) | `pyg_env` |
+`notebooks/decisions/_phase_template.ipynb` is the blank template new sweep notebooks are started from, not a decision itself.
 
-See [THESISPROCESSES.md](THESISPROCESSES.md) for a summary of every decision made and the quantitative rationale.
+### Post-training analysis notebooks (`notebooks/`, not in `decisions/`)
+
+All use the full-dataset champions (`attention_aa4_aq2_qq16`, `distance_aa8_aq2_qq24`) unless noted. See THESISPROCESSES.md → "Post-Training Analysis Findings" for results.
+
+| Notebook | Topic |
+|----------|-------|
+| `baseline_comparison.ipynb` | Non-GNN baselines vs. both architectures |
+| `alphafold_uncertainty_analysis.ipynb` | pLDDT/PAE vs. model error |
+| `error_clustering_analysis.ipynb` | Structural/chemical correlates of high-error proteins |
+| `mesh_density_analysis.ipynb` | Direct high-density prediction vs. sparse-predict + RBF-interpolate |
+| `pdb_af_comparison_analysis.ipynb` | AlphaFold vs. experimental PDB structures |
+| `seed_conformation_analysis.ipynb` | AlphaFold seed conformational-uncertainty pilot |
+| `vertex_error_analysis.ipynb` | Vertex-level error breakdown |
+| `embedding_analysis.ipynb` | Embedding + attention chemistry analysis |
+| `partial_charge_probe.ipynb` | Frozen-backbone probe recovering PARSE partial charges |
+| `initial_protein_data_analysis.ipynb`, `data_pipeline_functionality.ipynb` | Early exploratory / pipeline-validation notebooks, predate the `decisions/` series |
 
 ---
 
@@ -188,68 +163,58 @@ See [THESISPROCESSES.md](THESISPROCESSES.md) for a summary of every decision mad
 ```
 UniProt ID list
     │
-    ▼  01_download_structure.py
-AlphaFold mmCIF → PDB  +  pLDDT per residue  →  metadata.json
+    ▼  01_download_structures.py
+AlphaFold mmCIF + per-residue pLDDT + PAE  →  metadata.json
     │
     ▼  02_run_esp_calculations.py
-PDB → PDB2PQR → .pqr  +  .in
-                 │
-                 ▼  fix_pqr_columns()  ← repairs merged coordinate columns
-              APBS  →  .dx (ESP grid)
+mmCIF → PDB2PQR (PARSE, pH 7.0) → .pqr  →  APBS → .dx ESP grid
     │
     ▼  03_generate_surface.py
-.pdb / .pqr → MSMS → mesh (.npz + .vtk)  [pdb and pqr variants]
+.pqr → MSMS → SES mesh (.npz + .vtk), singularity-corrected
     │
     ▼  04_sample_esp.py
-mesh + .dx → ESP sampled onto surface (.npz)  [×4: pdb/pqr × interp/laplacian]
+mesh + .dx → trilinear ESP sample per vertex, curvature-subsample ~5% as query_idx → esp.npz
     │
-    ▼  05_evaluate.py
-sampled .npz → Pearson r + RMSE → metadata.json
+    ▼  05_evaluate_esp.py
+esp.npz → RBF interpolation baseline (interp_rmse / interp_pearson_r) → metadata.json
+    │
+    ▼  06_build_graphs.py
+PQR + mesh + esp.npz → heterogeneous PyG HeteroData, cached as graph.pt
+    │
+    ▼  07_train.py
+graph.pt (DynamicBatchSampler, packed by edge budget) → DistanceESPN / AttentionESPN
 ```
 
-All per-protein files live under `<data_root>/<protein_id>/` with subdirectories:
-`structure/`, `electrostatics/`, `mesh/`, `esp/`, `logs/`.
+The PDB-structure mesh track (no explicit hydrogens) was evaluated in notebook 01 and dropped — every mesh, graph, and model downstream is built from PQR files only.
 
-### ESP variants
+All per-protein data lives under `<data_root>/<protein_id>/`: `structure/` (`.cif`, `.pqr`, `_pae.json`), `electrostatics/` (`.dx`, optional — processed in memory by default), `mesh/` (`_mesh.npz`, `_mesh.vtk`), `esp/` (`_esp.npz`: vertices, ESP values, `query_idx`), `graph/` (`_graph.pt`), `logs/`, plus a top-level `<protein_id>_metadata.json` that accumulates fields across every stage (pLDDT stats, atom count, net charge, mesh vertex count, surface area, RBF baseline r/RMSE, per-stage timing, completion status).
 
-Each protein produces four ESP surface files:
+### Graph structure
 
-| File | Description |
-|------|-------------|
-| `pdb_mesh_interp.npz` | PDB structure, nearest-neighbour interpolation |
-| `pdb_mesh_laplacian.npz` | PDB structure, Laplacian reconstruction |
-| `pqr_mesh_interp.npz` | PQR structure (with hydrogens), nearest-neighbour |
-| `pqr_mesh_laplacian.npz` | PQR structure, Laplacian reconstruction |
+Heterogeneous PyG `HeteroData`, two node types and four edge types, no weight sharing across edge types:
 
-### Metadata fields
+| Node type | Contents |
+|-----------|----------|
+| `atom` | All heavy atoms + H, from PQR files. Element + residue + bond-type embeddings. |
+| `query` | ~5% curvature-sampled surface vertices — the prediction targets. |
 
-`<protein_id>_metadata.json` accumulates fields across stages:
+| Edge type | Definition | RBF range |
+|-----------|-----------|-----------|
+| `bond` | Covalent bonds (MDAnalysis-guessed) | [0.9, 1.8] Å |
+| `radial` | Atom-atom kNN=16, covalent pairs excluded | [1.8, 8.0] Å |
+| `aq` (atom→query) | kNN=32 per query, query-centric | [0.0, 12.0] Å |
+| `qq` (query-query) | kNN=8 | [0.0, 8.0] Å |
 
-| Field | Stage | Description |
-|-------|-------|-------------|
-| `protein_id` | Download | AlphaFold fragment ID (e.g. AF-Q16613-F1) |
-| `uniprot_id` | Download | UniProt accession |
-| `protein_name` | Download | Human-readable name |
-| `organism` | Download | Source organism |
-| `sequence_length` | Download | Number of amino acid residues |
-| `plddt_mean` | Download | Mean per-residue pLDDT |
-| `plddt_median` | Download | Median per-residue pLDDT |
-| `plddt_per_residue` | Download | Full per-residue pLDDT list |
-| `af_model_version` | Download | AlphaFold model version string |
-| `n_heavy_atoms` | PDB2PQR | Count of non-hydrogen atoms |
-| `net_charge` | PDB2PQR | Sum of partial charges (elementary charge units) |
-| `time_pdb2pqr_sec` | PDB2PQR | Wall-clock time for PDB2PQR |
-| `time_apbs_sec` | APBS | Wall-clock time for APBS |
-| `n_vertices_pdb` | Mesh | Number of SES vertices (PDB variant) |
-| `n_vertices_pqr` | Mesh | Number of SES vertices (PQR variant) |
-| `ses_area_pdb` | Mesh | Solvent-excluded surface area in Å² (PDB) |
-| `ses_area_pqr` | Mesh | Solvent-excluded surface area in Å² (PQR) |
-| `time_mesh_pdb_sec` | Mesh | Wall-clock time for PDB mesh |
-| `time_mesh_pqr_sec` | Mesh | Wall-clock time for PQR mesh |
-| `pearson_r_pdb` | Evaluate | Pearson r between interp and Laplacian ESP (PDB) |
-| `pearson_r_pqr` | Evaluate | Pearson r (PQR) |
-| `rmse_pdb` | Evaluate | RMSE between interp and Laplacian ESP (PDB) |
-| `rmse_pqr` | Evaluate | RMSE (PQR) |
+Message passing: bond+radial interleaved (Stage 1, n rounds) → AQ (Stage 2, once — mean-aggregation for DistanceESPN, multi-head cross-attention with RBF geometry bias for AttentionESPN) → QQ (Stage 3, n rounds). Cached graphs store one `edge_dist` scalar per edge (plus `bond_order` for bond edges); models expand to Gaussian RBF features on-device at forward time (`src/data/rbf.py`) rather than storing the baked expansion — see THESISPROCESSES.md → "Graph Storage — Slim Edge Attributes" for why (~3.8x smaller cache files).
+
+### Models
+
+- **`src/models/distance_espn.py` — `DistanceESPN`**: geometry encoded via RBF edge features only, mean/sum/max-concat aggregation throughout.
+- **`src/models/attention_espn.py` — `AttentionESPN`**: same three-stage structure, but Stage 2 (AQ) uses multi-head cross-attention with RBF geometry bias instead of mean aggregation. Best current results.
+- **`src/models/egnn.py`**: shared building blocks (`AtomEncoder`, `QueryEncoder`, `MessageLayer`, `_AtomMP`, `_QueryRefine`) and vocab sizes both architectures import.
+- **`src/baseline_models/`**: three non-GNN reference points — `coulomb/` (analytical vacuum-Coulomb physics floor, no learning), `cnn3d/` (dense voxel-grid 3D U-Net), `surface_dgcnn/` (EdgeConv point-cloud model on the mesh surface). See THESISPROCESSES.md → "Baseline Models" for what each isolates.
+- **`src/training/trainer.py` — `Trainer`**: training loop, EMA weight averaging (always on), bf16 autocast (always on), checkpointing, validation.
+- **`src/training/loss.py` — `ESPLoss`**: MSE + per-protein Pearson correlation, protein-size-weighted (always on).
 
 ---
 
@@ -257,44 +222,37 @@ Each protein produces four ESP surface files:
 
 ### `src/utils/paths.py` — `ProteinPaths`
 
-Single source of truth for all per-protein file paths.
+Single source of truth for every per-protein file path.
 
 ```python
 from src.utils.paths import ProteinPaths
 p = ProteinPaths(protein_id, data_root)
-p.ensure_dirs()          # create all subdirectories
-p.pqr_path               # Path to .pqr file
-p.dx_path                # Path to .dx ESP grid
-p.pdb_mesh_path          # Path to PDB mesh .npz
-p.pqr_interp_path        # Path to PQR interpolated ESP .npz
-p.is_evaluated()         # True if Pearson r metrics exist in metadata
-p.all_sampled_exist()    # True if all four ESP .npz files exist
+p.ensure_dirs()
+p.pqr_path
+p.dx_path
+p.graph_path()
+p.is_evaluated()
 ```
 
 ### `src/utils/config.py`
 
 ```python
 from src.utils.config import get_config, get_data_root, get_log_file
-cfg       = get_config()      # full config dict (cached)
-data_root = get_data_root()   # Path to data_root
-log_file  = get_log_file()    # Path to pipeline log file
+cfg = get_config()   # cached YAML config dict
 ```
 
 ### `src/utils/io.py`
 
-Thread-safe metadata JSON operations (uses `filelock`):
+Thread-safe metadata JSON operations (`filelock`-backed):
 
 ```python
 from src.utils.io import create_metadata, update_metadata, load_metadata
-create_metadata(protein_id, data={"key": "val"}, data_root=...)
-update_metadata(protein_id, data={"new_key": 42},  data_root=...)
-meta = load_metadata(protein_id, data_root=...)
 ```
 
 ### `src/utils/filter.py`
 
 ```python
-from src.utils.filter import get_protein_ids, add_filter_args, get_protein_ids_from_args
+from src.utils.filter import get_protein_ids, add_filter_args
 ids = get_protein_ids(data_root, select_all=True)
 ids = get_protein_ids(data_root, min_plddt=70, min_sequence_length=100)
 ```
@@ -302,106 +260,21 @@ ids = get_protein_ids(data_root, min_plddt=70, min_sequence_length=100)
 ### `src/utils/helpers.py`
 
 ```python
-from src.utils.helpers import get_logger, timer, notify
-log = get_logger(__name__, log_file=p.log_path)
-with timer() as t:
-    ...
-log.info("Elapsed: %.2f s", t.seconds)
-notify(protein_id, "complete")   # single-line terminal output
+from src.utils.helpers import get_logger, get_pipeline_logger, notify
 ```
 
----
-
-## Source Module Reference
-
-### `src/acquisition/af_api.py`
-
-| Function | Description |
-|----------|-------------|
-| `read_uniprot_ids(id_file)` | Read UniProt IDs from a text file (one per line, `#` comments ignored) |
-| `download_protein(uniprot_id, data_root)` | Download structure, pLDDT, and create metadata for one protein |
-| `download_structures(id_file, data_root)` | Batch download; returns `{"success": [...], "failed": [...]}` |
-| `find_downloaded_protein_id(uniprot_id, data_root)` | Find already-downloaded protein directory, returns ID string or `None` |
-
-### `src/electrostatics/run_pdb2pqr.py`
-
-| Function | Description |
-|----------|-------------|
-| `process_pdb2pqr(protein_id, data_root)` | Run PDB2PQR, fix merged columns, update metadata |
-| `fix_pqr_columns(pqr_path, plog)` | Repair coordinate columns merged by PDB2PQR for large proteins (e.g. `-19.098-100.028` → `-19.098 -100.028`) |
-| `count_heavy_atoms(pqr_path)` | Count non-hydrogen atoms in a .pqr file |
-| `compute_net_charge(pqr_path)` | Sum partial charges across all ATOM/HETATM records |
-| `fix_apbs_input(p, plog)` | Replace bare filenames in APBS .in file with absolute paths |
-
-### `src/electrostatics/run_apbs.py`
-
-| Function | Description |
-|----------|-------------|
-| `process_apbs(protein_id, data_root)` | Run APBS and update metadata with timing |
-
-### `src/surface/mesh.py`
-
-| Function | Description |
-|----------|-------------|
-| `build_mesh(input_file, protein_id, data_root)` | Build SES mesh from .pdb or .pqr via MSMS; saves .npz and .vtk |
-| `xyzr_from_pqr(pqr_file, plog)` | Parse .pqr for MSMS input (x, y, z, radius per atom) |
-| `xyzr_from_pdb(pdb_file, plog)` | Parse .pdb for MSMS input using MDAnalysis vdW radii |
-| `run_msms(xyzr_lines, positions, plog)` | Run MSMS subprocess and parse vertex/face output |
-| `filter_vertices_to_bbox(verts, min_coords, max_coords)` | Filter mesh vertices to atom bounding box |
-| `filter_faces(faces, mask)` | Remove faces referencing filtered-out vertices |
-| `save_npz_mesh(out_path, ...)` | Save mesh to compressed .npz |
-| `export_vtk(out_path, ...)` | Export mesh as ASCII VTK PolyData |
-
-### `src/surface/esp_mapping.py`
-
-| Function | Description |
-|----------|-------------|
-| `sample_esp(protein_id, data_root)` | Run all four ESP sampling variants; updates metadata |
-| `read_dx(dx_file)` | Parse OpenDX scalar field; returns axis arrays and grid |
-| `nearest_neighbor_esp(axes, grid, points)` | Snap surface points to nearest DX voxel |
-| `laplacian_reconstruct(verts, faces, known_idx, known_values)` | Reconstruct ESP at all vertices via sparse Laplacian solve |
-| `build_cotangent_laplacian(verts, faces)` | Build cotangent-weighted Laplacian matrix (sparse CSR) |
-| `vertex_curvature(verts, faces)` | Approximate mean curvature magnitude at each vertex |
-| `curvature_sampling(verts, faces, k)` | Sample k vertices weighted by curvature |
-| `offset_points(points, normals, offset)` | Shift surface points outward along vertex normals |
-
-### `src/analysis/metrics.py`
-
-| Function | Description |
-|----------|-------------|
-| `evaluate_protein(protein_id, data_root, write_metadata=True)` | Compute Pearson r and RMSE for all four ESP variants |
-| `compute_stats(esp_predicted, esp_reference)` | Return `(pearson_r, rmse)` for two arrays |
-
-### `src/analysis/visualization.py`
-
-| Function | Description |
-|----------|-------------|
-| `plot_esp_comparison(protein_id, data_root, clim=None)` | Render 2×2 PyVista window: interpolated vs Laplacian × PDB vs PQR |
+Modules use file-only loggers (no terminal output during processing); a single-line notification prints on completion or failure. Log level: `config.yaml` → `logging.level`.
 
 ---
 
-## Incomplete / Stub Modules
+## Testing
 
-The following files contain headers and docstrings only — implementation is a future stage:
-
-| Module | Purpose |
-|--------|---------|
-| `src/data/dataset.py` | PyTorch Dataset and DataLoader |
-| `src/data/graph_builder.py` | Graph construction for EGNN input |
-| `src/data/transform.py` | Normalization, masking, augmentation |
-| `src/models/egnn.py` | EGNN architecture and loss functions |
+`tests/` is currently a placeholder — no test runner is configured yet. `docs/testing_guide.md` documents the intended strategy (pure-Python logic and parsers under pytest with synthetic fixtures; subprocess calls to APBS/PDB2PQR/MSMS mocked, not exercised in CI; scientific validation stays in notebooks) for when that suite gets built out.
 
 ---
 
-## Logging
+## Where to look next
 
-All processing modules write to file-only loggers (no terminal output). A single notification line is printed to the terminal on completion or failure. Log level is set in `config.yaml` under `logging.level`.
-
-Per-protein logs: `<data_root>/<protein_id>/logs/<protein_id>.log`
-Pipeline log: path set in `config.yaml` under `paths.log_file`
-
----
-
-## No Tests Yet
-
-`tests/` contains only a placeholder. There is no test runner configured.
+- **[THESISPROCESSES.md](THESISPROCESSES.md)** — every methodological decision, the alternatives considered, and the quantitative rationale, including current full-dataset champion configuration and known open issues.
+- **[SUMMER_PLAN.md](SUMMER_PLAN.md)** — tiered research roadmap with per-item DONE/IN PROGRESS status.
+- **[EVAL_REPRODUCIBILITY_INVESTIGATION.md](EVAL_REPRODUCIBILITY_INVESTIGATION.md)** — one open, unresolved metrics-reproducibility gap (paused, not resolved — see THESISPROCESSES.md → "Known Issue").
