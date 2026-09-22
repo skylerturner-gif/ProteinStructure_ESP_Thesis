@@ -60,11 +60,11 @@ def rbf_expand(dist: Tensor, n_rbf: int, d_min: float, d_max: float) -> Tensor:
     """
     Expand a (E,) tensor of distances into (E, n_rbf) Gaussian RBF features.
 
-    Numerically equivalent to graph_builder._rbf_encode (the numpy version kept
-    for the non-slim build path): same centre spacing, same sigma, same
-    unnormalised Gaussian.  Always returns float32 — the cached ``edge_attr``
-    it replaces was float32, and downstream ``torch.cat`` with node features
-    expects that dtype.
+    Numerically equivalent to the numpy Gaussian-RBF encoder graph_builder used
+    to bake edge_attr in at build time before this module existed: same centre
+    spacing, same sigma, same unnormalised Gaussian.  Always returns float32 —
+    the cached ``edge_attr`` it replaces was float32, and downstream
+    ``torch.cat`` with node features expects that dtype.
 
     Args:
         dist:   (E,) edge distances in Å.  Any float dtype; cast to float32.

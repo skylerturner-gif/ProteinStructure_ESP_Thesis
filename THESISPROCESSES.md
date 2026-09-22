@@ -202,7 +202,7 @@ This document records every methodological decision made in the pipeline — wha
 
 ## Graph Storage — Slim Edge Attributes (2026-09-16)
 
-**Decision:** Cached graphs store one `edge_dist` float per edge (plus a `bond_order` column for bond edges) instead of the baked RBF expansion. Models expand to RBF features on-device at forward time (`src/data/rbf.py`'s `materialize_edge_attr`). This is now the default in `graph_builder.build_graph()` (`slim_edge_attr=True`) — every newly built graph, from any pipeline stage, comes out slim with no separate conversion step.
+**Decision:** Cached graphs store one `edge_dist` float per edge (plus a `bond_order` column for bond edges) instead of the baked RBF expansion. Models expand to RBF features on-device at forward time (`src/data/rbf.py`'s `materialize_edge_attr`). As of 2026-09-21 this is the *only* format `graph_builder.build_graph()` produces — the `slim_edge_attr` parameter and `06_build_graphs.py`'s `--no-slim-edge-attr` escape hatch were removed entirely, the same closed-gap treatment as the bf16 hardening above, so a build can no longer silently produce the legacy baked-RBF format. Every graph cache on disk across the project (`full_protein_dataset`, `subset_protein_data`, `pdb_comparison_data`) has been converted; nothing legacy-format remains. `materialize_edge_attr` still passes through an already-baked `edge_attr` untouched, so any graph built before 2026-09-16 elsewhere would still load correctly — that legacy-safety path just has nothing left to exercise on this project's own data.
 
 **Why:** A training run restricted to large proteins (≥600 aa) was measured at ~3% GPU utilization with `/proc/pressure/io` reporting ~80% full stall — the job was disk-bound, not compute-bound. Inspecting a cached graph file showed `edge_attr` (the baked 16-wide Gaussian RBF expansion of a single scalar distance) was **78.8% of the file's bytes** for zero additional information: the expansion is a pure function `exp(-((d-centers)²)/σ²)` of the stored positions, exactly recoverable at ~1e-6 precision, far below bf16's own resolution. Storing the scalar and expanding on-device shrinks a graph file ~3.78× and cuts DataLoader IPC and host RAM pressure by the same factor. It does **not** reduce VRAM — the expanded tensor is identical, just produced on the GPU instead of shipped there.
 
@@ -228,7 +228,7 @@ This document records every methodological decision made in the pipeline — wha
 
 **Pre-slim baseline preserved for reference:** the original (legacy-graph, correct-precision) `metrics.csv`/`test_metrics.json` for all four `full_dataset/` checkpoints are archived at `outputs/pre_slim_graph_baseline/` before any slim rerun could touch them, specifically so the before/after speed comparison above has a durable source.
 
-**Legacy escape hatch:** `pipelines/06_build_graphs.py --no-slim-edge-attr` still bakes the old format, for reproducing pre-2026-09-16 byte-for-byte behavior. Not used by anything by default.
+**Legacy escape hatch — removed (2026-09-21):** `pipelines/06_build_graphs.py --no-slim-edge-attr` used to exist for reproducing pre-2026-09-16 byte-for-byte behavior. It was never used by anything by default, and with every graph cache in the project now converted (see above), it was deleted along with `build_graph()`'s `slim_edge_attr`/`n_rbf` parameters and the now-dead numpy `_rbf_encode` helper — there is no longer a code path that can produce a baked-RBF graph.
 
 ---
 

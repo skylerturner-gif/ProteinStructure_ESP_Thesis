@@ -50,7 +50,6 @@ def _build_one(
     data_root: Path,
     force: bool,
     log,
-    slim_edge_attr: bool = True,
 ) -> str:
     """Build and cache the graph for one protein. Returns "ok", "skip", or "fail"."""
     p          = ProteinPaths(protein_id, data_root)
@@ -70,7 +69,7 @@ def _build_one(
 
     try:
         with timer() as t:
-            data = build_graph(protein_id, data_root, slim_edge_attr=slim_edge_attr)
+            data = build_graph(protein_id, data_root)
 
         tmp_path = graph_path.with_suffix(".pt.tmp")
         torch.save(data, tmp_path)
@@ -100,7 +99,7 @@ def _build_one(
 
 
 def _build_one_worker(
-    protein_id: str, data_root_str: str, force: bool, slim_edge_attr: bool = True,
+    protein_id: str, data_root_str: str, force: bool,
 ) -> tuple[str, str]:
     """Process-pool-safe wrapper. Returns (protein_id, status)."""
     from pathlib import Path
@@ -109,7 +108,7 @@ def _build_one_worker(
 
     data_root = Path(data_root_str)
     log       = get_pipeline_logger(Path(get_config()["paths"]["log_file"]))
-    status    = _build_one(protein_id, data_root, force, log, slim_edge_attr)
+    status    = _build_one(protein_id, data_root, force, log)
     return protein_id, status
 
 
@@ -134,14 +133,6 @@ def main() -> None:
         "--workers", type=int, default=1,
         help="Number of parallel worker processes (default: 1).",
     )
-    parser.add_argument(
-        "--no-slim-edge-attr", dest="slim_edge_attr", action="store_false", default=True,
-        help="Bake the RBF edge expansion into the cached graph instead of "
-             "storing one distance per edge. Produces ~3.9x larger files that "
-             "the models read without any forward-time expansion (the format "
-             "used before src/data/rbf.py existed). Only needed to reproduce "
-             "an old cache byte-for-byte.",
-    )
     add_filter_args(parser)
     args = parser.parse_args()
 
@@ -154,8 +145,8 @@ def main() -> None:
         return
 
     log.info(
-        "Building graphs for %d proteins  force=%s  workers=%d  slim_edge_attr=%s",
-        len(protein_ids), args.force, args.workers, args.slim_edge_attr,
+        "Building graphs for %d proteins  force=%s  workers=%d",
+        len(protein_ids), args.force, args.workers,
     )
 
     n_ok = n_skip = n_fail = 0
@@ -163,8 +154,7 @@ def main() -> None:
 
     if args.workers == 1:
         for protein_id in protein_ids:
-            status = _build_one(protein_id, data_root, args.force, log,
-                                args.slim_edge_attr)
+            status = _build_one(protein_id, data_root, args.force, log)
             if status == "ok":
                 n_ok   += 1; ok_ids.append(protein_id)
                 notify(protein_id, "complete", "graph build")
@@ -175,7 +165,7 @@ def main() -> None:
     else:
         results = run_parallel(
             _build_one_worker,
-            [(pid, str(data_root), args.force, args.slim_edge_attr)
+            [(pid, str(data_root), args.force)
              for pid in protein_ids],
             n_workers=args.workers,
             label="graphs",
