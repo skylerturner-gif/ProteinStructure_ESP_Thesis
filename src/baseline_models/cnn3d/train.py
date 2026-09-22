@@ -34,7 +34,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from src.baseline_models.cnn3d.dataset import Vox3DDataset
+from src.baseline_models.cnn3d.dataset import DEFAULT_MAX_VOXELS, Vox3DDataset
 from src.baseline_models.cnn3d.model import Vox3DCNN
 from src.data.dataset import load_split_manifest
 from src.training.loss import ESPLoss, pearson_r
@@ -49,6 +49,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--pearson-weight", type=float, default=0.5)
     p.add_argument("--voxel-size", type=float, default=1.0)
     p.add_argument("--padding", type=float, default=5.0)
+    p.add_argument("--max-voxels", type=int, default=DEFAULT_MAX_VOXELS,
+                   help="Skip proteins whose D*H*W grid exceeds this (batch size is "
+                        "fixed at 1, so there's no batching fallback for an oversized "
+                        "grid). 0 disables the cap. See dataset.py's DEFAULT_MAX_VOXELS "
+                        "comment for how the default was derived.")
     p.add_argument("--lr-patience", type=int, default=10)
     p.add_argument("--ema-decay", type=float, default=0.999,
                    help="EMA decay for shadow weights, matching the main GNN pipeline's "
@@ -77,7 +82,8 @@ def _val_epoch(
 ) -> tuple[float, float]:
     """Distributed val: each rank evaluates its own slice, then all-reduces."""
     rank_ids = [pid for i, pid in enumerate(val_ids) if i % world_size == rank]
-    val_ds = Vox3DDataset(rank_ids, data_root, args.voxel_size, args.padding)
+    val_ds = Vox3DDataset(rank_ids, data_root, args.voxel_size, args.padding,
+                          max_voxels=(args.max_voxels or None))
     loader = DataLoader(val_ds, batch_size=1, shuffle=False,
                         num_workers=0, collate_fn=_collate_single,
                         pin_memory=False)
@@ -137,7 +143,8 @@ def main() -> None:
         print(f"Device: {device}" + (f"  (DDP world_size={world_size})" if ddp else ""))
 
     train_ids, val_ids, _ = load_split_manifest(data_root)
-    train_ds = Vox3DDataset(train_ids, data_root, args.voxel_size, args.padding)
+    train_ds = Vox3DDataset(train_ids, data_root, args.voxel_size, args.padding,
+                            max_voxels=(args.max_voxels or None))
 
     train_sampler = DistributedSampler(
         train_ds, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True,

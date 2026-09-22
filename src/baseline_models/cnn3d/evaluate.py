@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import torch
 from torch.utils.data import DataLoader
 
-from src.baseline_models.cnn3d.dataset import Vox3DDataset
+from src.baseline_models.cnn3d.dataset import DEFAULT_MAX_VOXELS, Vox3DDataset
 from src.baseline_models.cnn3d.model import Vox3DCNN
 from src.data.dataset import load_split_manifest
 from src.training.loss import pearson_r as pearson_r_torch
@@ -69,7 +69,8 @@ def main() -> None:
 
     ds = Vox3DDataset(ids, data_root,
                       voxel_size=cfg.get("voxel_size", 1.0),
-                      padding=cfg.get("padding", 5.0))
+                      padding=cfg.get("padding", 5.0),
+                      max_voxels=cfg.get("max_voxels", DEFAULT_MAX_VOXELS))
     loader = DataLoader(ds, batch_size=1, shuffle=False,
                         num_workers=2, collate_fn=_collate_single)
 

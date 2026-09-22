@@ -106,6 +106,35 @@ def query_xyz_to_grid_coords(
     return coords
 
 
+def estimate_grid_voxels(pqr_path: Path, voxel_size: float = 1.0, padding: float = 5.0) -> int:
+    """Return D*H*W for this PQR without allocating the grid.
+
+    Just the atom coordinate bounding box -- a few hundred KB of text I/O,
+    no (N_CHANNELS, D, H, W) array. Used to skip proteins whose full grid
+    would be too large for the model to hold in memory before doing any
+    real work (see Vox3DDataset's max_voxels).
+    """
+    lo = np.array([np.inf] * 3)
+    hi = np.array([-np.inf] * 3)
+    with open(pqr_path) as f:
+        for line in f:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            try:
+                xyz = np.array([float(parts[-5]), float(parts[-4]), float(parts[-3])])
+            except ValueError:
+                continue
+            lo = np.minimum(lo, xyz)
+            hi = np.maximum(hi, xyz)
+    lo -= padding
+    hi += padding
+    dims = np.ceil((hi - lo) / voxel_size).astype(np.int64) + 1
+    return int(dims[0]) * int(dims[1]) * int(dims[2])
+
+
 def _parse_pqr_elements(pqr_path: Path) -> tuple[np.ndarray, list[int]]:
     """Read PQR → atom positions and element channel indices.
 
