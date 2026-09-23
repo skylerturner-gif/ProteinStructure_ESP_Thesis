@@ -287,7 +287,7 @@ This document records every methodological decision made in the pipeline — wha
 
 ## Model Selection — Message-Passing Aggregation Sweep B
 
-**Status:** Data complete; decision section in the notebook is an unfilled template (literal "?" placeholders) — never formally written up, though the data unambiguously favors one option and that option is already the hardcoded default (see "Current Core Training Configuration").
+**Status:** Complete, decision recorded (2026-09-22).
 
 **Notebook:** `notebooks/decisions/08_message_aggregation_sweep.ipynb`
 
@@ -299,7 +299,7 @@ This document records every methodological decision made in the pipeline — wha
 
 ## Model Selection — Chemistry Layer Ablation Sweep F
 
-**Status:** Data complete; decision section in the notebook is an unfilled template. First attempt (pre-2026-08) never finished cleanly — `distance_chem_stripped` stalled at epoch 98/120 and other runs had an `agg='sum'` vs `'multi'` config bug; redone in full against the standardized 4/4/4 multi-agg baseline.
+**Status:** Complete, decision recorded (2026-09-22). First attempt (pre-2026-08) never finished cleanly — `distance_chem_stripped` stalled at epoch 98/120 and other runs had an `agg='sum'` vs `'multi'` config bug; redone in full against the standardized 4/4/4 multi-agg baseline.
 
 **Notebook:** `notebooks/decisions/10_chemistry_layer_ablations.ipynb`
 
@@ -307,21 +307,21 @@ This document records every methodological decision made in the pipeline — wha
 
 **Validation Pearson r:** Attention — no_residue 0.9029 ≈ baseline 0.9016 > no_radial 0.8891 > no_bond 0.8786 > spatial_only 0.8565 > chem_stripped 0.8255. Distance — baseline 0.9046 > no_residue 0.9032 > no_radial 0.8993 > no_bond 0.8797 > chem_stripped 0.8339 > spatial_only 0.8176.
 
-**Unwritten but data-supported read:** Residue-identity embedding looks nearly redundant (dropping it costs ~nothing, occasionally helps). Bond topology and radial kNN each cost real Pearson r when removed. Chemistry-stripped and spatial-only rungs drop substantially (~0.07–0.09 r), confirming atom-level chemistry is load-bearing overall even though residue identity specifically is not. **Note:** the per-bin delta cells (§3) still reference a `phase_d` baseline checkpoint inconsistent with the `phase_h` baseline used in the main config table — likely a leftover from the pre-redo version, not corrected in the 2026-08 rerun.
+**Decision:** Residue-identity embedding looks nearly redundant (dropping it costs ~nothing, occasionally helps — Attention even ticks up +0.0013, within the known eval-reproducibility noise band). Bond topology and radial kNN each cost real Pearson r when removed, `no_bond` more than `no_radial` for both architectures. Chemistry-stripped and spatial-only rungs are the two worst by a wide margin (~0.045–0.087 r), confirming atom-level chemistry is load-bearing overall even though residue identity specifically is not — with an architecture-flip in which is worse (Attention: `chem_stripped` < `spatial_only`; Distance: `spatial_only` < `chem_stripped`). **Fixed (2026-09-22):** the per-bin delta cells (§3) previously referenced an undefined `BASELINE_CKPT` — not just a stale-data footnote but a hard `NameError` on re-run. Now derived from the notebook's own `RUNS` list (resolves to the `phase_h` baseline used everywhere else in the notebook) and re-executed with real output.
 
 ---
 
-## Model Selection — Structure Rounds (AA/AQ) Sweep E — in progress
+## Model Selection — Structure Rounds (AA/AQ) Sweep E
 
-**Status:** Explicitly self-flagged as partial by the notebook. As of last update: 3/8 planned runs done (Attention aa8, aa12, aq8); Attention aq12 was still training; all 4 Distance runs were pending. No decision has been written — the notebook's own final cell states the decision is "to be filled in once all 8 runs complete."
+**Status:** Complete, decision recorded (2026-09-22). All 8/8 planned runs finished; a checkpoint audit that day found the data had been complete for a while but the notebook's Decision cell was never updated from its "3/8 done... to be filled in once all 8 runs complete" placeholder.
 
 **Notebook:** `notebooks/decisions/14_structure_rounds_sweep.ipynb`
 
-**Swept so far:** AA (bond/radial) rounds ∈ {8, 12} and AQ rounds ∈ {8, 12}, each independently vs. the 4/4/4 baseline, holding QQ at 4.
+**Swept:** AA (bond/radial) rounds ∈ {8, 12} and AQ rounds ∈ {8, 12}, each independently vs. the 4/4/4 baseline, holding QQ at 4.
 
-**Test Pearson r / RMSE so far:** AA sweep — Attention baseline 0.8898/2.660, aa8 0.9022/2.416, aa12 0.9003/2.375; Distance baseline 0.8964/2.573, aa8 0.9035/2.425, aa12 0.9034/2.349. AQ sweep — Attention baseline 0.8898/2.660, aq8 0.8923/2.571 (aq12 pending); Distance baseline 0.8964/2.573, aq8 0.8963/2.565, aq12 0.8960/2.560 (essentially flat).
+**Test Pearson r / RMSE:** AA sweep — Attention baseline 0.8898/2.660, aa8 0.9022/2.416, aa12 0.9003/2.375; Distance baseline 0.8964/2.573, aa8 0.9035/2.425, aa12 0.9034/2.349. AQ sweep — Attention baseline 0.8898/2.660, aq8 0.8923/2.571, aq12 0.8909/2.582; Distance baseline 0.8964/2.573, aq8 0.8963/2.565, aq12 0.8960/2.560 (essentially flat).
 
-**Early read (not yet a decision):** AA rounds are a real second lever, worth ~+0.01–0.014 r at aa8, with diminishing/mixed returns at aa12. AQ rounds look close to redundant/saturated even at the 4-round baseline. The conditional-combination step (testing AA+QQ or AQ+QQ together) is blocked pending these results — though see "AQ+QQ Round Combination Sweep" immediately below: those 4 combo runs did happen (and are now precision-corrected), just not documented in this section or folded back into a closed-out Sweep E decision. Despite the sweep being unfinished, the full-dataset champion models already adopted asymmetric AA rounds per architecture (Attention aa=4, Distance aa=8) — see "Full-Dataset Champion Configuration" below — consistent with this early read but not confirmed by a closed-out sweep.
+**Decision:** AA rounds are a real second lever — `aa8` clearly beats baseline for both architectures (+0.0124 r Attention, +0.0071 r Distance); `aa12` gives mixed/diminishing returns past `aa8` (Attention's r actually dips slightly at aa12 despite a small RMSE gain; Distance is essentially flat r with a modest RMSE gain). AQ rounds are close to redundant/saturated already at the 4-round baseline for both architectures. The range-breakdown check (per the project's standard practice of not trusting a net delta without it) shows Attention's AA/AQ gains are **not** uniform across the ESP range — it loses in the most-negative bins — unlike the QQ sweep's clean 100%-of-bins win; Distance's AA/AQ deltas are uniform. **Open, unresolved note:** the full-dataset champions ended up using Attention aa=**4** (the baseline, not this sweep's aa8 winner) and Distance aa=**8** — the reason Attention's champion didn't carry forward the aa8 result isn't recorded anywhere. The AA+QQ/AQ+QQ combination step this sweep set out to eventually run is superseded by the separately-documented "AQ+QQ Round Combination Sweep" below (`attention_aq2_qq16/24`, `distance_aa8_aq2_qq16/24`).
 
 ---
 
@@ -382,15 +382,15 @@ Roughly half the VRAM and ~35–40% faster per epoch, now consistent with every 
 
 ## Model Validation — SE(3) Rotation/Translation Robustness
 
-**Status:** Conclusion stands but is explicitly flagged by the notebook itself as needing a re-run ("⚠ Needs re-run") — cited numbers are from legacy `*_v2_feat_off/on` checkpoints, not the current `phase_a`/`phase_c` checkpoints the rest of the notebook points at.
+**Status:** Complete, re-run on current checkpoints (2026-09-22), "⚠ Needs re-run" flag removed.
 
 **Notebook:** `notebooks/decisions/12_invariance_analysis.ipynb`
 
-**Method:** Evaluation-only, reusing the 4 Sweep C checkpoints (`{attention,distance} × {features on/off}`). Positions rigidly transformed (translation / rotation / rotation+translation, 5 repeats each), edges recomputed via the real graph builder, predictions compared pre/post-transform on 50 sampled test proteins. A sanity check first confirmed numerically that RBF edge features are exactly invariant (diff = 0.00) and bond edges untouched, while surface normals do change (max diff 1.58).
+**Method:** Evaluation-only, reusing the 4 Sweep C checkpoints (`{attention,distance} × {features on/off}` — `phase_a/{attention,distance}_pw05` for off, `phase_c/{attention,distance}_on` for on). Positions rigidly transformed (translation / rotation / rotation+translation, 5 repeats each), edges recomputed via the real graph builder, predictions compared pre/post-transform on 50 sampled test proteins (same scale as the original run). A sanity check first confirmed numerically that RBF edge features are exactly invariant and bond edges untouched, while surface normals do change. The 2026-09-22 re-run also fixed the sanity-check cell for the slim `edge_dist` graph format (RBF now materialized in `model.forward()`, not baked into the cache since 2026-09-16) — same check, adapted storage, not a methodology change.
 
-**Result:** Translation — prediction-prediction correlation = 1.0000 for all 4 models. Rotation / rotation+translation — features-off models = 1.0000 (exact, by construction); features-on: Attention 0.9932 ± 0.0035, Distance 0.9972 ± 0.0018. Mean Δ Pearson r < 0.001 across all conditions.
+**Result:** Translation — prediction-prediction correlation = 1.0000 for all 4 models. Rotation / rotation+translation — features-off models = 1.0000 (exact, by construction); features-on: Attention 0.9968 ± 0.0018 / 0.9969 ± 0.0019, Distance 0.9973 ± 0.0016 / 0.9973 ± 0.0017. Mean Δ Pearson r < 0.001 across all conditions, exactly 0 for features-off.
 
-**Decision (provisional pending re-run):** Non-equivariant architecture is justified. Rotational instability from the surface-normal feature is real but tiny, with negligible accuracy impact. No equivariant architecture (SE(3)-Transformer/Equiformer) is warranted.
+**Decision:** Non-equivariant architecture is justified — confirmed on the current full-training-recipe checkpoints, slightly stronger than the original legacy-checkpoint numbers (Attention 0.9968 vs. 0.9932). Rotational instability from the surface-normal feature is real but tiny, with negligible accuracy impact. No equivariant architecture (SE(3)-Transformer/Equiformer) is warranted.
 
 ---
 
@@ -525,7 +525,7 @@ All notebooks in this section use the full-dataset champions (`attention_aa4_aq2
 
 ### Error Clustering — Structural/Chemical Correlates of High-Error Proteins
 
-**Status:** Data and statistics complete; §12 "Summary" is an unfilled template ("*Fill in after reviewing the plots and tables above*") — no final prose synthesis was written, despite rigorous quantitative work throughout.
+**Status:** Complete, including a written §13 "Summary" (added 2026-09-21, when the notebook was re-executed against the slim-graph-retrained champions — this line previously read "unfilled template," which was stale).
 
 **Notebook:** `notebooks/error_clustering_analysis.ipynb` (848-protein master CSV, 34 features; Spearman correlations, PCA→UMAP/t-SNE, KMeans/DBSCAN/Agglomerative clustering, Kruskal-Wallis + Mann-Whitney tests).
 
@@ -557,17 +557,19 @@ All notebooks in this section use the full-dataset champions (`attention_aa4_aq2
 
 ### Vertex-Level Error Breakdown
 
-**Status:** Data and statistics complete; final "Summary" section is the same unfilled template as the error-clustering notebook — no written prose conclusion.
+**Status:** Complete, written Summary added (2026-09-22).
 
 **Notebook:** `notebooks/vertex_error_analysis.ipynb` (848-protein cached vertex-level stats via `scripts/compute_vertex_error_stats.py`; cross-checked against existing RMSE metrics, diff <1e-3). Directly addresses the SUMMER_PLAN.md "Clean Up Information Loss Comparisons" item's three-way error decomposition.
 
-**Finding:** Error is U-shaped across the ESP value range — worst at the extremes ([-15,-8) and [8,15) kT/e, ~3 kT/e) vs. mid-range (~1.1–1.7 kT/e). Direct query-node prediction beats RBF-interpolated full-mesh reconstruction in 98.2–98.5% of proteins (small but consistent gap, ~0.07–0.08 kT/e) — i.e. reconstruction loss is real but small relative to model loss. Moran's I (spatial autocorrelation of error) correlates strongly with whole-mesh RMSE (r=0.82–0.83): high-error proteins have spatially clustered ("hotspot") error, not diffuse error.
+**Finding:** Error is U-shaped across the ESP value range — mean |error| bottoms at [-2,2) kT/e (1.11 attention / 1.05 distance) and rises to 2.91–2.98 (attention) / 2.68–2.73 (distance) at the extremes, a 2.5–2.7x extreme-to-middle ratio (extreme bins also hold far fewer vertices, 60K vs. 1.19M). Direct query-node prediction beats RBF-interpolated full-mesh reconstruction in 97.4% (attention) / 98.3% (distance) of proteins — a small, consistent gap (+0.070/+0.080 kT/e) that's only ~4–5% of mean whole-mesh RMSE, i.e. ~95% of total error is genuine model error, not reconstruction loss. Moran's I (spatial autocorrelation of error) correlates strongly with whole-mesh RMSE (Spearman r=0.831–0.832): high-error proteins have spatially clustered ("hotspot") error, not diffuse error. Shape, percentages, and correlation are essentially architecture-independent (Distance's raw error is a few points lower throughout, same pattern).
 
 ### Embedding & Attention Chemistry Analysis
 
-**Status:** Findings stated (in a "Key Findings" block at the top of the notebook rather than a closing summary); §1c (cross-model embedding similarity) produces only a plot with no printed values or written interpretation.
+**Status:** Complete, including §1c interpretation (added 2026-09-22).
 
 **Notebook:** `notebooks/embedding_analysis.ipynb` — frozen-backbone probing of the Attention champion plus cross-model comparison against the Distance champion: embedding cosine similarity, per-element/per-residue AQ attention weights, cross-model embedding similarity.
 
-**Finding:** Oxygen draws visibly higher and more variable attention than nitrogen despite comparable edge counts (e.g., Head 2: O 0.105±0.196 vs. N 0.008±0.040) — chemistry-driven, not abundance-driven. Same pattern at residue level: charged/polar residues (ARG, LYS, GLU, ASP) show higher-variance attention than hydrophobic ones. This is consistent with, and partially anticipates, the still-unfinished quantitative validation in decision notebook 16 (Attention Head Specialization) above.
+**Finding:** Oxygen draws visibly higher and more variable attention than nitrogen despite comparable edge counts (e.g., Head 2: O 0.105±0.196 vs. N 0.008±0.040) — chemistry-driven, not abundance-driven. Same pattern at residue level: charged/polar residues (ARG, LYS, GLU, ASP) show higher-variance attention than hydrophobic ones. This is consistent with, and partially anticipates, the quantitative validation in decision notebook 16 (Attention Head Specialization) above.
+
+**§1c cross-model embedding similarity — caution, likely not what it first looks like:** all six elements show ≥0.9999 cosine similarity between the two independently-trained models' `AtomEncoder` embedding tables — near-identity to the 3rd–4th significant digit, not loose directional agreement. This is better explained by a shared confound than independent convergence: both `sweeps/full_dataset_champions.yaml` runs use `seed: 42`, and `AtomEncoder` is the first submodule constructed in both `AttentionESPN.__init__` and `DistanceESPN.__init__`, so the embedding table starts near-identical rather than diverging independently. §1c as computed can't distinguish "converged independently" from "started identical, barely moved" — it neither corroborates nor undermines the O≫N attention-weight finding above, and should not be cited as evidence of independent chemistry-grounded convergence without a de-confounded re-run (e.g. different seeds per architecture).
 
