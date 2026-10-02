@@ -54,6 +54,15 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--max-points", type=int, default=8192,
                    help="Random downsample target; 0 = keep all vertices")
     p.add_argument("--lr-patience", type=int, default=10)
+    p.add_argument("--num-workers", type=int, default=2,
+                   help="DataLoader workers. Was hardcoded 0 (all per-protein mesh/kNN-cache/"
+                        "chemistry-cache I/O serialized with zero GPU overlap) -- measured as "
+                        "the dominant full-dataset-scale bottleneck, not the EdgeConv forward "
+                        "pass itself. Default 2 matches the main GNN pipeline's validated-safe "
+                        "setting. persistent_workers/pin_memory stay off either way -- that "
+                        "combination corrupted data in the main pipeline's PyG Collater; this "
+                        "baseline uses a plain custom collate_fn, not PyG's, so the specific "
+                        "failure mode doesn't apply, but the off/off setting is cheap insurance.")
     p.add_argument("--ema-decay", type=float, default=0.999,
                    help="EMA decay for shadow weights, matching the main GNN pipeline's "
                         "Trainer. best_model.pt stores EMA weights; latest_model.pt stores "
@@ -79,7 +88,7 @@ def _val_epoch(
     max_pts = args.max_points if args.max_points > 0 else None
     val_ds = SurfaceDataset(rank_ids, data_root, max_points=max_pts, k=args.k)
     loader = DataLoader(val_ds, batch_size=1, shuffle=False,
-                        num_workers=0, collate_fn=collate_surface, pin_memory=False)
+                        num_workers=args.num_workers, collate_fn=collate_surface, pin_memory=False)
 
     model.eval()
     total_loss, total_r, n = 0.0, 0.0, 0
@@ -149,7 +158,7 @@ def main() -> None:
         train_ds, batch_size=1,
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        num_workers=0,
+        num_workers=args.num_workers,
         collate_fn=collate_surface,
         pin_memory=False,
     )

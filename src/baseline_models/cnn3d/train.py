@@ -55,6 +55,15 @@ def _parse_args() -> argparse.Namespace:
                         "grid). 0 disables the cap. See dataset.py's DEFAULT_MAX_VOXELS "
                         "comment for how the default was derived.")
     p.add_argument("--lr-patience", type=int, default=10)
+    p.add_argument("--num-workers", type=int, default=2,
+                   help="DataLoader workers. Was hardcoded 0 (per-protein PQR-read + "
+                        "voxelization serialized with zero GPU overlap) -- the sibling "
+                        "Surface DGCNN baseline measured this exact pattern as its dominant "
+                        "full-dataset-scale bottleneck. Default 2 matches the main GNN "
+                        "pipeline's validated-safe setting. persistent_workers/pin_memory stay "
+                        "off either way -- this baseline's collate_fn is a plain single-item "
+                        "passthrough, not PyG's Collater, so the main pipeline's corruption "
+                        "failure mode doesn't apply, but off/off is cheap insurance.")
     p.add_argument("--ema-decay", type=float, default=0.999,
                    help="EMA decay for shadow weights, matching the main GNN pipeline's "
                         "Trainer. best_model.pt stores EMA weights; latest_model.pt stores "
@@ -85,7 +94,7 @@ def _val_epoch(
     val_ds = Vox3DDataset(rank_ids, data_root, args.voxel_size, args.padding,
                           max_voxels=(args.max_voxels or None))
     loader = DataLoader(val_ds, batch_size=1, shuffle=False,
-                        num_workers=0, collate_fn=_collate_single,
+                        num_workers=args.num_workers, collate_fn=_collate_single,
                         pin_memory=False)
 
     model.eval()
@@ -154,7 +163,7 @@ def main() -> None:
         train_ds, batch_size=1,
         sampler=train_sampler,
         shuffle=(train_sampler is None),
-        num_workers=0,
+        num_workers=args.num_workers,
         collate_fn=_collate_single,
         pin_memory=False,
     )
