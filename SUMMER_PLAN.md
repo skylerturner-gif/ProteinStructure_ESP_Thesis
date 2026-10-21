@@ -37,12 +37,12 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 - The original single feature-ablation task grew into a full staged ablation covering loss weighting, aggregation, query features, QQ/AA/AQ round counts, and chemistry-layer ablation across both architectures — see `notebooks/decisions/07`–`16` plus `09_ema_justification.ipynb`. Status per axis, against the shared EMA + protein-size-weighted, 4/4/4-round, `agg=multi` baseline:
   - **Sweep A** (loss pearson-weight, `07_loss_function_sweep.ipynb`) — **DONE.** Winner `pearson_weight=0.5` (`attention_pw05`), the baseline every later sweep is measured against. *Note: its cited test metrics have an unresolved small reproducibility gap on re-evaluation — see THESISPROCESSES.md → "Known Issue — Sweep A Baseline Reproducibility."*
   - **EMA justification** (`09_ema_justification.ipynb`) — **DONE.** EMA kept; modest but real benefit, 120-epoch budget confirmed sufficient.
-  - **Sweep B** (aggregation, `08_message_aggregation_sweep.ipynb`) — data complete, `multi` wins clearly for both architectures (already the adopted default), but the notebook's own decision section was never filled in.
+  - **Sweep B** (aggregation, `08_message_aggregation_sweep.ipynb`) — **DONE.** `multi` wins clearly for both architectures on every tracked axis (val r, val RMSE, train/val gap) — already the adopted default.
   - **Sweep C** (query features, `11_query_features_ablation.ipynb`) — **DONE.** Re-tested under the new baseline; conclusion reframed from "features hurt" to "features neutral" — off is kept by a narrow margin plus the SE(3)-invariance argument (`12_invariance_analysis.ipynb`, itself flagged as needing a re-run against current checkpoints).
   - **Sweep D** (QQ rounds, `13_query_rounds_sweep.ipynb`) — **DONE.** Full sweep 0→32; ~100%-of-bins win at every step 0→12, plateauing after. Full-dataset champions use qq=16 (Attention) / qq=24 (Distance).
-  - **Sweep E** (AA/AQ rounds, `14_structure_rounds_sweep.ipynb`) — **IN PROGRESS**, self-flagged partial by the notebook (3/8 runs done as of last update). Early read: AA rounds are a real second lever, AQ rounds look near-redundant at baseline. No decision written yet, though the full-dataset champions already use asymmetric AA rounds (Attention aa=4, Distance aa=8) consistent with the early read.
-  - **Sweep F** (chemistry ablation, `10_chemistry_layer_ablations.ipynb`) — data complete (6-rung ladder × 2 architectures), residue embedding looks nearly redundant while bond/radial/chemistry-stripped rungs cost real accuracy, but the notebook's decision section was never filled in.
-- **Remaining work:** finish Sweep E's last 5 runs and write the E decision; go back and fill in the B and F decision write-ups (data already supports clear conclusions for both).
+  - **Sweep E** (AA/AQ rounds, `14_structure_rounds_sweep.ipynb`) — **DONE**, 8/8 runs complete. AA rounds are a real second lever (`aa8` wins clearly, `aa12` mixed/diminishing); AQ rounds are near-redundant/saturated at baseline. Open note: the full-dataset Attention champion kept aa=4 (baseline) rather than carrying forward this sweep's aa8 winner — Distance's champion did adopt aa=8 — reason not recorded.
+  - **Sweep F** (chemistry ablation, `10_chemistry_layer_ablations.ipynb`) — **DONE.** Residue embedding is nearly redundant; bond/radial/chemistry-stripped rungs cost real accuracy (chemistry-stripped and spatial-only worst by far, ~0.05–0.09 r). Also fixed a real bug found during this pass: §3's per-bin delta cells referenced an undefined variable and would `NameError` on re-run.
+- **Remaining work:** none — all of Sweeps A–F now have written decisions.
 - **Depends on:** Correct-method reruns (done), larger dataset (done).
 
 ### pLDDT Correlation with Model Error — DONE (result: no correlation)
@@ -57,10 +57,9 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 - Cross-model embedding similarity (§1c of `embedding_analysis.ipynb`) produced a plot but no written interpretation — the one loose end.
 - **Depends on:** Larger dataset (done), trained models on same splits (done).
 
-### Attention Heads → Chemistry, Physics, Dynamics — IN PROGRESS (not yet the flagship result)
+### Attention Heads → Chemistry, Physics, Dynamics — DONE (the flagship result)
 - **Impact:** Flagship | **Effort:** Medium
-- `notebooks/decisions/16_attention_head_analysis.ipynb` is the dedicated notebook for this. Sections 1–9 (per-element/per-residue attention distributions, electronegativity-weighted affinity score, side-chain-class and solvent-exposure grouping, across n_heads ∈ {2,4,8}) are done — specialization rises mildly with head count (score 0.0230→0.0287→0.0330), and acidic residues (ASP/GLU) consistently draw elevated attention. **But the notebook's own stated "real test" — §11 emergent clustering and §12 quantitative ARI/NMI agreement check — was never executed (cells have no output), and the final decision table is an unfilled placeholder.** `embedding_analysis.ipynb`'s findings above anticipate this result but don't substitute for the rigorous validation.
-- This is still the most publishable result on the roadmap once §11–12 are run and the decision is written — the pieces are in place.
+- `notebooks/decisions/16_attention_head_analysis.ipynb`, §1–13 all complete (this line was stale — §11–12's "real test" has in fact been run). Attention organizes measurably around **charge sign** specifically, peaking at n_heads=4: the quantitative §11–12 clustering-from-raw-attention-alone test recovers charge sign strongly at n_heads=4 (ARI 0.468→**0.813**→0.506 for 2/4/8 heads, a striking non-monotonic peak), recovers the 5-way chemistry classification only weakly everywhere (ARI 0.12–0.26), and does not recover solvent exposure at all (ARI≈−0.089) despite exposure modulating attention *magnitude*. Retrained on slim graphs at a uniform 75-epoch budget: test r 0.9335/0.9344/0.9356 for 2/4/8 heads — heads8 now edges out heads4 by +0.0012 (within this project's noise band), reopening but not overturning the earlier "n_heads=4 champion" framing on raw accuracy; the internal-structure finding (charge-sign specialization peaking at n_heads=4) is separate from and not explained by that accuracy ranking. See THESISPROCESSES.md → "Model Validation — Attention Head Specialization" for full detail.
 - **Depends on:** Feature analysis (done), probe_charges results (done).
 
 ---
@@ -77,7 +76,7 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 
 ### Clean Up Information Loss Comparisons — DONE
 - **Impact:** Medium | **Effort:** Low
-- `notebooks/vertex_error_analysis.ipynb` separates model loss from RBF reconstruction loss directly: direct query-node prediction beats RBF-interpolated full-mesh reconstruction in 98.2–98.5% of proteins (small but consistent gap, ~0.07–0.08 kT/e) — reconstruction loss is real but small relative to model loss. It also found error is U-shaped across the ESP range (worst at extremes) and that spatial error clustering (Moran's I) correlates strongly with whole-mesh RMSE (r=0.82–0.83). `notebooks/mesh_density_analysis.ipynb` complements this by showing higher query density (10%/25%) makes predictions strictly *worse*, validating the current 5%-sparse-predict + interpolate design rather than treating density as a free knob. Neither notebook wrote a final prose summary section (both end on an unfilled template), so the write-up prose itself still needs to be drafted from the completed figures/tables.
+- `notebooks/vertex_error_analysis.ipynb` separates model loss from RBF reconstruction loss directly: direct query-node prediction beats RBF-interpolated full-mesh reconstruction in 97.4% (attention) / 98.3% (distance) of proteins (small but consistent gap, ~0.07–0.08 kT/e, ~95% of total error is genuine model error) — reconstruction loss is real but small relative to model loss. It also found error is U-shaped across the ESP range (worst at extremes) and that spatial error clustering (Moran's I) correlates strongly with whole-mesh RMSE (Spearman r=0.831–0.832). `notebooks/mesh_density_analysis.ipynb` complements this by showing higher query density (10%/25%) makes predictions strictly *worse*, validating the current 5%-sparse-predict + interpolate design rather than treating density as a free knob. `vertex_error_analysis.ipynb`'s final prose summary is now written (2026-09-22); `mesh_density_analysis.ipynb`'s summary status wasn't re-checked in this pass — THESISPROCESSES.md's own "Mesh Query Density" section describes it as complete with an explicit decision, which may mean this line was already stale before today.
 - **Depends on:** Master CSV (done).
 
 ### Protein Analysis Tools
@@ -168,13 +167,13 @@ This file is the AI-agent reference for summer 2025 research direction. Tiers in
 | Master CSV — DONE | 1 | High | Low |
 | Dataset scale-up — DONE | 1 | Very High | Medium |
 | Correct-method reruns — DONE | 1 | Very High | Low |
-| Rotation/translation test — DONE (flagged: needs re-run on current checkpoints) | 2 | Very High | Low |
-| Staged ablation (Sweeps A–F) — A/C/D done, B/F data-done/undecided, E in progress | 2 | High | Medium |
+| Rotation/translation test — DONE (re-run on current checkpoints 2026-09-22) | 2 | Very High | Low |
+| Staged ablation (Sweeps A–F) — all six DONE with written decisions | 2 | High | Medium |
 | pLDDT–error correlation — DONE (result: null; size drives error instead) | 2 | High | Medium |
 | Embedding analysis (2 architectures) — DONE | 2 | Very High | Medium |
-| Attention heads → chemistry — IN PROGRESS (core validation §11–12 unrun) | 2 | Flagship | Medium |
+| Attention heads → chemistry — DONE (§11–12 complete: charge-sign specialization peaks at n_heads=4) | 2 | Flagship | Medium |
 | Non-GNN baselines — DONE (scale caveat: not re-run on full dataset) | 3 | Very High | High |
-| Info-loss comparison cleanup — DONE (prose summary still needed) | 3 | Medium | Low |
+| Info-loss comparison cleanup — DONE | 3 | Medium | Low |
 | Protein analysis tools | 3 | Medium | Low |
 | AF vs PDB ESP comparison — DONE | 3 | High | High |
 | Force field analysis | 4 | Medium | High |

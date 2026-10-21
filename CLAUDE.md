@@ -45,22 +45,24 @@ cp config.template.yaml config.yaml
 
 ```bash
 # Full end-to-end (handles env switching internally)
-python pipelines/full_pipeline.py --id-file data/test_ids.txt
+python pipelines/full_pipeline.py --id-file data/ablation_subset_ids.txt
 
 # Data generation only (stages 1–5, protein_esp env)
-python pipelines/data_gen_pipeline.py --id-file data/test_ids.txt --workers 4
+python pipelines/data_gen_pipeline.py --id-file data/ablation_subset_ids.txt --workers 4
 
 # Modeling only (stages 6–7, pyg_env)
-python pipelines/model_pipeline.py --id-file data/test_ids.txt
+python pipelines/model_pipeline.py --id-file data/ablation_subset_ids.txt
 
 # Individual stage scripts
-python pipelines/01_download_structures.py --id-file data/test_ids.txt
+python pipelines/01_download_structures.py --id-file data/ablation_subset_ids.txt
 python pipelines/02_run_esp_calculations.py --filter --min-sequence-length 100
 python pipelines/03_generate_surface.py --all
 python pipelines/04_sample_esp.py --filter --min-plddt 70
 python pipelines/05_evaluate_esp.py --all
 python pipelines/06_build_graphs.py --all
-python pipelines/07_train.py --model attention --config configs/default.yaml
+# 07_train.py has no --config flag; it injects config.yaml's model:/training:
+# sections as argparse defaults automatically. CLI flags override them.
+python pipelines/07_train.py --model attention --epochs 120 --bf16
 
 # Fetch candidate UniProt IDs for dataset expansion
 python scripts/fetch_uniprot_ids.py --output data/candidate_ids.txt

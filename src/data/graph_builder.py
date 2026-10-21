@@ -36,21 +36,25 @@ exists in the graph.
 
 Edge attributes
 ---------------
-Stored slim by default (slim_edge_attr=True): each edge store carries
-``edge_dist`` (1 float32 per edge), and bond additionally carries
-``bond_order``.  The model expands these to RBF features on-device via
-src/data/rbf.py's materialize_edge_attr, which is what the message-passing
-layers consume:
+Every edge store carries ``edge_dist`` (1 float32 per edge), and bond
+additionally carries ``bond_order``. There is no baked-RBF build path — this
+is the only format build_graph() produces. The model expands these to RBF
+features on-device via src/data/rbf.py's materialize_edge_attr, which is what
+the message-passing layers consume:
 
-  bond  : [bond_order (1)] ++ [RBF distance (N_RBF)]  →  N_RBF+1 floats
+  bond   : [bond_order (1)] ++ [RBF distance (N_RBF)]  →  N_RBF+1 floats
   radial : [RBF distance (N_RBF)]
-  aq   : [RBF distance (N_RBF)]
-  qq   : [RBF distance (N_RBF)]
+  aq     : [RBF distance (N_RBF)]
+  qq     : [RBF distance (N_RBF)]
 
-Slim storage is ~3.9x smaller on disk (the RBF expansion was 78.8% of a graph
-file) and is the same information — see src/data/rbf.py for why. Pass
-slim_edge_attr=False to bake ``edge_attr`` in at build time, as graphs built
-before this split did; those older caches still load and train unchanged.
+This is ~3.9x smaller on disk than baking the RBF expansion in at build time
+(that expansion was 78.8% of a graph file) for the same information — see
+src/data/rbf.py for why. N_RBF is chosen at train time by the model, not at
+build time. Caches built before 2026-09-16 (when this was still optional)
+predate this and still load and train unchanged — materialize_edge_attr is
+legacy-safe — but nothing on disk in this project is in that format anymore
+(see scripts/slim_graph_edge_attr.py for the one-time converter used to
+retire the last of it).
 
 RBF distance windows live in src/data/rbf.py's RBF_RANGES (single source of
 truth, shared with the forward-time expansion):
@@ -58,7 +62,7 @@ truth, shared with the forward-time expansion):
 
 Public API
 ----------
-  build_graph(protein_id, data_root, *, knn_radial, knn_aq, knn_qq, n_rbf) -> HeteroData
+  build_graph(protein_id, data_root, *, knn_radial, knn_aq, knn_qq) -> HeteroData
   ELEMENT_VOCAB, RESIDUE_VOCAB, N_ELEMENT_TYPES, N_RESIDUE_TYPES  (model constants)
 """
 
@@ -75,7 +79,6 @@ from torch_geometric.data import HeteroData
 
 import MDAnalysis as mda
 
-from src.data.rbf import RBF_RANGES
 from src.utils.config import get_config
 from src.utils.helpers import get_logger
 from src.utils.paths import ProteinPaths
@@ -257,19 +260,6 @@ def _knn_radial(
     )
 
 
-def _rbf_encode(
-    dists: np.ndarray,
-    n_rbf: int,
-    d_min: float,
-    d_max: float,
-) -> np.ndarray:
-    """Gaussian RBF encoding. Returns (len(dists), n_rbf) float32 array."""
-    centers = np.linspace(d_min, d_max, n_rbf, dtype=np.float32)
-    sigma   = (d_max - d_min) / max(n_rbf - 1, 1)
-    d       = dists[:, None].astype(np.float32)
-    return np.exp(-((d - centers) ** 2) / (sigma ** 2))
-
-
 # ── Surface geometry helpers ──────────────────────────────────────────────────
 
 def _compute_vertex_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
@@ -361,8 +351,6 @@ def build_graph(
     knn_radial: int = 16,
     knn_aq: int = 32,
     knn_qq: int = 8,
-    n_rbf: int = 16,
-    slim_edge_attr: bool = True,
 ) -> HeteroData:
     """
     Build a PyG HeteroData graph for one protein.
@@ -378,13 +366,6 @@ def build_graph(
         knn_radial:  k for radial supplementary atom-atom kNN (bond pairs excluded)
         knn_aq:      k for atom→query edges (query-centric)
         knn_qq:      k for query→query edges
-        n_rbf:       number of Gaussian RBF basis functions per edge.  Only
-                     used when slim_edge_attr=False; slim graphs defer the
-                     expansion to the model, so n_rbf is chosen at train time.
-        slim_edge_attr: store one float32 distance per edge (plus bond_order
-                     for bond edges) instead of the baked RBF expansion,
-                     shrinking the cached file ~3.9x.  The model expands it
-                     on-device.  Pass False for the legacy baked format.
 
     Returns:
         HeteroData with node types 'atom' and 'query', and edge types
@@ -487,27 +468,14 @@ def build_graph(
     curvature = _compute_mean_curvature(verts, faces)
     data["query"].curvature = torch.tensor(curvature[q_idx], dtype=torch.float)
 
-    # Edge stores.  Slim (default): one float32 distance per edge, expanded to
-    # RBF features on-device by src/data/rbf.py at forward time.  Legacy: bake
-    # the expansion in here, as graphs built before the split did.
+    # Edge stores: one float32 distance per edge, expanded to RBF features
+    # on-device by src/data/rbf.py's materialize_edge_attr at forward time.
     def _attach_edges(edge_type, src, dst, dists, bond_orders=None):
-        relation = edge_type[1]
         store = data[edge_type]
         store.edge_index = torch.tensor(np.stack([src, dst]), dtype=torch.long)
-
-        if slim_edge_attr:
-            store.edge_dist = torch.tensor(dists, dtype=torch.float)
-            if bond_orders is not None:
-                store.bond_order = torch.tensor(bond_orders, dtype=torch.float)
-            return
-
-        d_min, d_max = RBF_RANGES[relation]
-        attr = _rbf_encode(dists, n_rbf, d_min=d_min, d_max=d_max)
+        store.edge_dist  = torch.tensor(dists, dtype=torch.float)
         if bond_orders is not None:
-            # Column order [bond_order | rbf] is load-bearing — trained
-            # checkpoints depend on it. rbf.materialize_edge_attr matches it.
-            attr = np.concatenate([bond_orders[:, None], attr], axis=1)
-        store.edge_attr = torch.tensor(attr, dtype=torch.float)
+            store.bond_order = torch.tensor(bond_orders, dtype=torch.float)
 
     _attach_edges(("atom", "bond", "atom"),    bond_src,   bond_dst,   bond_dists,
                   bond_orders=bond_orders)
@@ -519,7 +487,7 @@ def build_graph(
     data.protein_id     = protein_id
     data.n_atoms        = n_atoms
     data.n_query        = n_query
-    data.edge_attr_slim = bool(slim_edge_attr)
+    data.edge_attr_slim = True
     # query_normal/query_curvature are always attached now (see above) —
     # report them as always present regardless of what config.yaml said at
     # build time; other keys (e.g. true_radial) still reflect feat_cfg since
